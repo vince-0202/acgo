@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"os"
 
-	"go-pi/pkg/agent"
+	"acgo/pkg/agent"
 )
 
 type writeTool struct{}
 
-func (t *writeTool) Name() string        { return "write" }
-func (t *writeTool) Label() string       { return "Write File" }
-func (t *writeTool) Description() string { return "Write contents to a file, replacing existing content if any." }
+func (t *writeTool) Name() string  { return "write" }
+func (t *writeTool) Label() string { return "Write FilePath" }
+func (t *writeTool) Description() string {
+	return "Write contents to a file, replacing existing content if any."
+}
 
 func (t *writeTool) JSONSchema() map[string]any {
 	return map[string]any{
@@ -55,4 +57,3 @@ func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.Ra
 func NewWriteTool() agent.AgentTool {
 	return &writeTool{}
 }
-

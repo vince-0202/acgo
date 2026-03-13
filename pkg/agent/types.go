@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"go-pi/pkg/llm"
+	"acgo/pkg/llm"
 )
 
 // AgentMessageRole describes high-level roles, including custom ones like notification.
@@ -17,12 +17,13 @@ const (
 
 // AgentMessage is the application-facing message type.
 type AgentMessage struct {
-	ID         string                 // unique identifier within a session
-	Role       AgentMessageRole       // logical role
-	Content    string                 // rendered text content (for UI)
-	LlmMessage *llm.Message           // backing LLM message when applicable
-	IsError    bool                   // whether this message represents an error
-	Metadata   map[string]any         // arbitrary metadata
+	ID         string           // unique identifier within a session
+	Role       AgentMessageRole // logical role
+	Content    string           // rendered text content (for UI)
+	ToolCallID string           // when Role is RoleTool, required for OpenAI-style APIs
+	LlmMessage *llm.Message     // backing LLM message when applicable
+	IsError    bool             // whether this message represents an error
+	Metadata   map[string]any   // arbitrary metadata
 }
 
 // ThinkingLevel controls reasoning intensity, similar to pi-agent-core.
@@ -44,9 +45,8 @@ type AgentState struct {
 	Tools         []AgentTool
 	Messages      []AgentMessage
 
-	IsStreaming   bool
-	StreamMessage *AgentMessage
+	IsStreaming      bool
+	StreamMessage    *AgentMessage
 	PendingToolCalls []llm.ToolCall
-	Error         error
+	Error            error
 }
-

@@ -7,19 +7,12 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Settings represents the merged configuration for pi-go.
-type Settings struct {
-	DefaultProvider string            `mapstructure:"default_provider"`
-	DefaultModelID  string            `mapstructure:"default_model_id"`
-	APIKeys         map[string]string `mapstructure:"api_keys"`
-}
-
 // LoadSettings loads global and project-level settings, merging them.
 func LoadSettings() (*Settings, error) {
 	v := viper.New()
 
 	home, _ := os.UserHomeDir()
-	globalDir := filepath.Join(home, ".gopi", "agent")
+	globalDir := filepath.Join(home, ".acto")
 
 	v.SetConfigType("yaml")
 	v.SetDefault("default_provider", "openai")
@@ -29,9 +22,9 @@ func LoadSettings() (*Settings, error) {
 	v.AddConfigPath(globalDir)
 	_ = v.ReadInConfig() // ignore not found
 
-	// Project-level override: .gopi/settings.yaml
+	// Project-level override: .acto/settings.yaml
 	projectDir, _ := os.Getwd()
-	projectConfigDir := filepath.Join(projectDir, ".gopi")
+	projectConfigDir := filepath.Join(projectDir, ".acto")
 	v.AddConfigPath(projectConfigDir)
 	_ = v.MergeInConfig()
 
@@ -48,6 +41,7 @@ func LoadSettings() (*Settings, error) {
 		s.APIKeys["openai"] = key
 	}
 
+	s.Log.loadAndInit()
+
 	return &s, nil
 }
-

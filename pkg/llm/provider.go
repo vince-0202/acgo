@@ -1,16 +1,19 @@
 package llm
 
-import "context"
+import (
+	"acgo/pkg/keys"
+	"context"
+)
 
 // Options captures call-level configuration that is independent from a specific provider.
 type Options struct {
-	Temperature     float32             // sampling temperature
-	MaxOutputTokens int                 // optional override for maximum output tokens
-	StopSequences   []string            // optional stop sequences
-	Tools           []Tool              // tool definitions available to the model
-	ToolChoice      string              // provider-specific tool choice hint, e.g. "auto", "none"
-	Metadata        map[string]any      // arbitrary metadata for providers
-	ReasoningEffort ReasoningCapability // qualitative reasoning effort
+	Temperature     float32                  // sampling temperature
+	MaxOutputTokens int                      // optional override for maximum output tokens
+	StopSequences   []string                 // optional stop sequences
+	Tools           []Tool                   // tool definitions available to the model
+	ToolChoice      string                   // provider-specific tool choice hint, e.g. "auto", "none"
+	Metadata        map[string]any           // arbitrary metadata for providers
+	ReasoningEffort keys.ReasoningCapability // qualitative reasoning effort
 }
 
 // StreamFunc is the unified streaming interface implemented by all providers.
@@ -36,6 +39,9 @@ func RegisterProvider(p Provider) {
 		return
 	}
 	providerRegistry[p.Name()] = p
+	for _, m := range p.Models() {
+		RegisterModel(m)
+	}
 }
 
 // GetProvider retrieves a provider by name.
@@ -52,4 +58,3 @@ func ListProviders() []Provider {
 	}
 	return out
 }
-

@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"os/exec"
 
-	"go-pi/pkg/agent"
+	"acgo/pkg/agent"
 )
 
 type bashTool struct{}
 
-func (t *bashTool) Name() string        { return "bash" }
-func (t *bashTool) Label() string       { return "Run Shell Command" }
-func (t *bashTool) Description() string { return "Execute a shell command and return its stdout/stderr." }
+func (t *bashTool) Name() string  { return "bash" }
+func (t *bashTool) Label() string { return "Run Shell Command" }
+func (t *bashTool) Description() string {
+	return "Execute a shell command and return its stdout/stderr."
+}
 
 func (t *bashTool) JSONSchema() map[string]any {
 	return map[string]any{
@@ -33,7 +35,13 @@ func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 		Command string `json:"command"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		// Some models pass a raw string instead of {"command":"..."}; treat it as the command.
+		var raw string
+		if json.Unmarshal(args, &raw) == nil && raw != "" {
+			params.Command = raw
+		} else {
+			return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		}
 	}
 	if params.Command == "" {
 		return agent.ToolResult{}, fmt.Errorf("command is required")
@@ -54,4 +62,3 @@ func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 func NewBashTool() agent.AgentTool {
 	return &bashTool{}
 }
-

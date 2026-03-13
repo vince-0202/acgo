@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"os"
 
-	"go-pi/pkg/agent"
+	"acgo/pkg/agent"
 )
 
 type readTool struct{}
 
 func (t *readTool) Name() string        { return "read" }
-func (t *readTool) Label() string       { return "Read File" }
+func (t *readTool) Label() string       { return "Read FilePath" }
 func (t *readTool) Description() string { return "Read file contents from disk." }
 
 func (t *readTool) JSONSchema() map[string]any {
@@ -33,7 +33,13 @@ func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		// Some models pass a raw string instead of {"path":"..."}; treat it as the path.
+		var raw string
+		if json.Unmarshal(args, &raw) == nil && raw != "" {
+			params.Path = raw
+		} else {
+			return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		}
 	}
 	if params.Path == "" {
 		return agent.ToolResult{}, fmt.Errorf("path is required")
@@ -51,4 +57,3 @@ func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 func NewReadTool() agent.AgentTool {
 	return &readTool{}
 }
-

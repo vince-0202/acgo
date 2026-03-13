@@ -22,13 +22,15 @@ type ContentBlock struct {
 
 // Message models a single message in the conversation context.
 // ToolCall and ToolResult are attached for providers that support tool usage.
+// For role "tool", ToolCallID must be set and Content is the tool result text.
 type Message struct {
-	Role       Role          `json:"role"`
+	Role       Role           `json:"role"`
 	Content    []ContentBlock `json:"content,omitempty"`
-	Provider   string        `json:"provider,omitempty"` // which provider produced this assistant message
-	Thinking   string        `json:"thinking,omitempty"` // serialized reasoning content, if any
-	ToolCall   *ToolCall     `json:"tool_call,omitempty"`
-	ToolResult *ToolResult   `json:"tool_result,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"` // required when Role is RoleTool for OpenAI-style APIs
+	Provider   string         `json:"provider,omitempty"`
+	Thinking   string         `json:"thinking,omitempty"`
+	ToolCall   *ToolCall      `json:"tool_call,omitempty"`
+	ToolResult *ToolResult    `json:"tool_result,omitempty"`
 }
 
 // Context contains the full list of messages for a call.
@@ -36,4 +38,3 @@ type Message struct {
 type Context struct {
 	Messages []Message `json:"messages"`
 }
-
