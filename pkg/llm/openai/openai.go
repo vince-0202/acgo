@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"acgo/pkg/keys"
 	"acgo/pkg/llm"
 	"acgo/pkg/log"
 )
@@ -72,26 +73,35 @@ func (c *Client) Models() []llm.Model {
 	return c.models
 }
 
+// deepSeekThinking enables DeepSeek thinking mode per https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+type deepSeekThinking struct {
+	Type string `json:"type"` // "enabled"
+}
+
 // chatCompletionRequest mirrors the OpenAI Chat Completions API shape (simplified).
 type chatCompletionRequest struct {
-	Model       string         `json:"model"`
-	Messages    []chatMessage  `json:"messages"`
-	Stream      bool           `json:"stream"`
-	MaxTokens   int            `json:"max_tokens,omitempty"`
-	Temperature float32        `json:"temperature,omitempty"`
-	Stop        []string       `json:"stop,omitempty"`
-	Tools       []openAITool   `json:"tools,omitempty"`
-	ToolChoice  any            `json:"tool_choice,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
+	Model       string            `json:"model"`
+	Messages    []chatMessage     `json:"messages"`
+	Stream      bool              `json:"stream"`
+	MaxTokens   int               `json:"max_tokens,omitempty"`
+	Temperature float32           `json:"temperature,omitempty"`
+	Stop        []string          `json:"stop,omitempty"`
+	Tools       []openAITool      `json:"tools,omitempty"`
+	ToolChoice  any               `json:"tool_choice,omitempty"`
+	Metadata    map[string]any    `json:"metadata,omitempty"`
+	Thinking    *deepSeekThinking `json:"thinking,omitempty"` // DeepSeek only: enable reasoning_content
 }
 
 // chatMessage: for tool role, Content must be a string and tool_call_id set; for other roles, Content is []contentPart.
 // For assistant with tool use, ToolCalls must be set and Content must be []contentPart (each part with "text" for type "text").
+// ReasoningContent: DeepSeek thinking mode requires this field on every assistant message (use "" when none).
+// No omitempty so the field is always sent for assistant; OpenAI ignores unknown fields.
 type chatMessage struct {
-	Role       string           `json:"role"`
-	Content    interface{}      `json:"content"` // string for "tool", []contentPart for user/assistant/system
-	ToolCallID string           `json:"tool_call_id,omitempty"`
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role"`
+	Content          interface{}      `json:"content"`           // string for "tool", []contentPart for user/assistant/system
+	ReasoningContent string           `json:"reasoning_content"` // required by DeepSeek thinking mode for assistant; empty for user/system/tool
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
 // openAIToolCall is the assistant-message tool call shape for the API.
@@ -102,8 +112,16 @@ type openAIToolCall struct {
 }
 
 type openAIToolCallFn struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+	Name      string            `json:"name"`
+	Arguments argumentsAsString `json:"arguments"` // API expects a string; we store raw JSON and marshal as string
+}
+
+// argumentsAsString marshals as a JSON string so the request body has "arguments": "{\"key\":\"val\"}".
+// OpenAI/DeepSeek require tool_calls[].function.arguments to be a string, not an object.
+type argumentsAsString json.RawMessage
+
+func (a argumentsAsString) MarshalJSON() ([]byte, error) {
+	return json.Marshal(string(a))
 }
 
 type contentPart struct {
@@ -114,9 +132,10 @@ type contentPart struct {
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Role             string `json:"role"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"` // DeepSeek thinking mode
+			ToolCalls        []struct {
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
@@ -152,7 +171,7 @@ func (c *Client) Stream(ctx context.Context, model llm.Model, context llm.Contex
 	go func() {
 		defer close(out)
 
-		msg, _, err := c.Complete(ctx, model, context, opts)
+		msg, usage, err := c.Complete(ctx, model, context, opts)
 		if err != nil {
 			out <- llm.Event{Type: llm.EventError, Error: err}
 			return
@@ -163,8 +182,15 @@ func (c *Client) Stream(ctx context.Context, model llm.Model, context llm.Contex
 		if msg.ToolCall != nil {
 			out <- llm.Event{Type: llm.EventToolCallStart, ToolCall: msg.ToolCall}
 			out <- llm.Event{Type: llm.EventToolCallEnd, ToolCall: msg.ToolCall}
-			out <- llm.Event{Type: llm.EventDone, StopReason: "toolUse"}
+			out <- llm.Event{Type: llm.EventDone, StopReason: "toolUse", Usage: &usage}
 			return
+		}
+
+		// Emit thinking events when DeepSeek (or other) returns reasoning_content.
+		if msg.Thinking != "" {
+			out <- llm.Event{Type: llm.EventThinkingStart}
+			out <- llm.Event{Type: llm.EventThinkingDelta, ThinkingDelta: msg.Thinking}
+			out <- llm.Event{Type: llm.EventThinkingEnd}
 		}
 
 		out <- llm.Event{Type: llm.EventTextStart}
@@ -179,7 +205,7 @@ func (c *Client) Stream(ctx context.Context, model llm.Model, context llm.Contex
 			out <- llm.Event{Type: llm.EventTextDelta, TextDelta: fullText}
 		}
 		out <- llm.Event{Type: llm.EventTextEnd}
-		out <- llm.Event{Type: llm.EventDone, StopReason: "stop"}
+		out <- llm.Event{Type: llm.EventDone, StopReason: "stop", Usage: &usage}
 	}()
 	return out, nil
 }
@@ -212,6 +238,10 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, context llm.Cont
 			}
 		}
 		reqBody.Metadata = opts.Metadata
+		// DeepSeek thinking mode: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+		if model.Reasoning != keys.ThinkingNone || opts.ReasoningEffort != keys.ThinkingNone {
+			reqBody.Thinking = &deepSeekThinking{Type: "enabled"}
+		}
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -270,6 +300,7 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, context llm.Cont
 	msg := llm.Message{
 		Role:     llm.RoleAssistant,
 		Provider: c.Name(),
+		Thinking: choice.Message.ReasoningContent,
 	}
 	// If the model responded with tool calls, map the first one to llm.ToolCall.
 	if len(choice.Message.ToolCalls) > 0 {
@@ -277,7 +308,7 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, context llm.Cont
 		msg.ToolCall = &llm.ToolCall{
 			ID:        tc.ID,
 			Name:      tc.Function.Name,
-			Arguments: tc.Function.Arguments,
+			Arguments: llm.NormalizeToolCallArguments(tc.Function.Arguments),
 		}
 	} else {
 		msg.Content = []llm.ContentBlock{
@@ -287,6 +318,7 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, context llm.Cont
 	usage := llm.Usage{
 		InputTokens:  raw.Usage.PromptTokens,
 		OutputTokens: raw.Usage.CompletionTokens,
+		TotalTokens:  raw.Usage.PromptTokens + raw.Usage.CompletionTokens,
 	}
 	log.Debugf("[llm] return usage in=%d out=%d", usage.InputTokens, usage.OutputTokens)
 	if msg.ToolCall != nil {
@@ -356,12 +388,15 @@ func convertMessages(msgs []llm.Message) []chatMessage {
 			parts = []contentPart{{Type: "text", Text: ""}}
 		}
 		cm := chatMessage{Role: role, Content: parts}
-		if role == "assistant" && m.ToolCall != nil {
-			cm.ToolCalls = []openAIToolCall{{
-				ID:       m.ToolCall.ID,
-				Type:     "function",
-				Function: openAIToolCallFn{Name: m.ToolCall.Name, Arguments: m.ToolCall.Arguments},
-			}}
+		if role == "assistant" {
+			cm.ReasoningContent = m.Thinking
+			if m.ToolCall != nil {
+				cm.ToolCalls = []openAIToolCall{{
+					ID:       m.ToolCall.ID,
+					Type:     "function",
+					Function: openAIToolCallFn{Name: m.ToolCall.Name, Arguments: argumentsAsString(m.ToolCall.Arguments)},
+				}}
+			}
 		}
 		out = append(out, cm)
 	}

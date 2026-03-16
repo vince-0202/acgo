@@ -14,7 +14,7 @@ type writeTool struct{}
 func (t *writeTool) Name() string  { return "write" }
 func (t *writeTool) Label() string { return "Write FilePath" }
 func (t *writeTool) Description() string {
-	return "Write contents to a file, replacing existing content if any."
+	return "Write contents to a file, replacing existing content if any. Use for creating or overwriting files."
 }
 
 func (t *writeTool) JSONSchema() map[string]any {
@@ -23,11 +23,11 @@ func (t *writeTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Path to the file to write",
+				"description": "Absolute or relative path to the file to write",
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "New file contents",
+				"description": "Full new file contents to write",
 			},
 		},
 		"required": []string{"path", "content"},
@@ -46,7 +46,7 @@ func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.Ra
 		return agent.ToolResult{}, fmt.Errorf("path is required")
 	}
 	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
-		return agent.ToolResult{}, err
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 	return agent.ToolResult{
 		Content: fmt.Sprintf("wrote %d bytes to %s", len(params.Content), params.Path),

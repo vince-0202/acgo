@@ -2,19 +2,23 @@ package session
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
 // Message is a single entry in a session log.
 type Message struct {
-	ID        string                 `json:"id"`
-	ParentID  string                 `json:"parent_id,omitempty"`
-	Role      string                 `json:"role"`
-	Content   string                 `json:"content"`
-	CreatedAt time.Time              `json:"created_at"`
-	Metadata  map[string]any         `json:"metadata,omitempty"`
+	ID        string         `json:"id"`
+	ParentID  string         `json:"parent_id,omitempty"`
+	Role      string         `json:"role"`
+	Content   string         `json:"content"`
+	CreatedAt time.Time      `json:"created_at"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 // Session manages appending and reading messages from a JSONL file.
@@ -73,3 +77,39 @@ func (s *Session) LoadAll() ([]Message, error) {
 	return result, nil
 }
 
+// NewSessionPath returns a new session file path under root with format YYYYMMDD-HHMMSS-<random>.jsonl.
+func NewSessionPath(root string) (string, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	prefix := now.Format("20060102-150405")
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return filepath.Join(root, fmt.Sprintf("%s-%s.jsonl", prefix, hex.EncodeToString(b))), nil
+}
+
+// List returns paths of session files in root (JSONL files), newest first by name.
+func List(root string) ([]string, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
+			continue
+		}
+		paths = append(paths, filepath.Join(root, e.Name()))
+	}
+	// newest first (filename sort gives chronological order for YYYYMMDD-HHMMSS-*)
+	for i, j := 0, len(paths)-1; i < j; i, j = i+1, j-1 {
+		paths[i], paths[j] = paths[j], paths[i]
+	}
+	return paths, nil
+}

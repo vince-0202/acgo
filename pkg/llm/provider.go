@@ -7,13 +7,13 @@ import (
 
 // Options captures call-level configuration that is independent from a specific provider.
 type Options struct {
-	Temperature     float32                  // sampling temperature
-	MaxOutputTokens int                      // optional override for maximum output tokens
-	StopSequences   []string                 // optional stop sequences
-	Tools           []Tool                   // tool definitions available to the model
-	ToolChoice      string                   // provider-specific tool choice hint, e.g. "auto", "none"
-	Metadata        map[string]any           // arbitrary metadata for providers
-	ReasoningEffort keys.ReasoningCapability // qualitative reasoning effort
+	Temperature     float32            // sampling temperature
+	MaxOutputTokens int                // optional override for maximum output tokens
+	StopSequences   []string           // optional stop sequences
+	Tools           []Tool             // tool definitions available to the model
+	ToolChoice      string             // provider-specific tool choice hint, e.g. "auto", "none"
+	Metadata        map[string]any     // arbitrary metadata for providers
+	ReasoningEffort keys.ThinkingLevel // qualitative reasoning effort
 }
 
 // StreamFunc is the unified streaming interface implemented by all providers.

@@ -1,0 +1,243 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"acgo/pkg/config"
+	"acgo/pkg/llm"
+)
+
+// recordingTool is a test AgentTool that records the last received arguments.
+type recordingTool struct {
+	name         string
+	receivedArgs json.RawMessage
+}
+
+func (t *recordingTool) Name() string {
+	if t.name != "" {
+		return t.name
+	}
+	return "read"
+}
+func (t *recordingTool) Label() string { return "Read file" }
+func (t *recordingTool) Description() string {
+	return "Read contents of a file"
+}
+func (t *recordingTool) JSONSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string", "description": "File path"},
+		},
+		"required": []any{"path"},
+	}
+}
+func (t *recordingTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, _ ToolUpdateFunc) (ToolResult, error) {
+	t.receivedArgs = append(json.RawMessage(nil), args...)
+	return ToolResult{Content: "ok", IsError: false}, nil
+}
+
+func TestExecutePendingTools_NormalizesDoubleEncodedArguments(t *testing.T) {
+	rec := &recordingTool{name: "read"}
+	// Double-encoded: model returns arguments as a JSON string containing the real JSON.
+	doubleEncoded := `"{\"path\":\"/tmp/foo\"}"`
+	callCount := 0
+
+	mockStream := func(ctx context.Context, _ llm.Model, _ llm.Context, _ *llm.Options) (<-chan llm.Event, error) {
+		callCount++
+		ch := make(chan llm.Event, 8)
+		if callCount == 1 {
+			// First turn: model requests a tool call.
+			ch <- llm.Event{Type: llm.EventStart}
+			ch <- llm.Event{Type: llm.EventToolCallStart, ToolCall: &llm.ToolCall{
+				ID:        "call-1",
+				Name:      "read",
+				Arguments: json.RawMessage(doubleEncoded),
+			}}
+			ch <- llm.Event{Type: llm.EventToolCallEnd, ToolCall: &llm.ToolCall{
+				ID:        "call-1",
+				Name:      "read",
+				Arguments: json.RawMessage(doubleEncoded),
+			}}
+			ch <- llm.Event{Type: llm.EventDone, StopReason: "toolUse"}
+		} else {
+			// Second turn (after tool result): model responds with text and stops.
+			ch <- llm.Event{Type: llm.EventStart}
+			ch <- llm.Event{Type: llm.EventTextStart}
+			ch <- llm.Event{Type: llm.EventTextDelta, TextDelta: "Done."}
+			ch <- llm.Event{Type: llm.EventTextEnd}
+			ch <- llm.Event{Type: llm.EventDone, StopReason: "stop"}
+		}
+		close(ch)
+		return ch, nil
+	}
+
+	a := New("test", Options{
+		InitialState: AgentState{
+			Model: llm.Model{ModelSetting: config.ModelSetting{ID: "test-model"}, Provider: "test"},
+			Tools: []AgentTool{rec},
+		},
+		StreamFn: mockStream,
+	})
+	ctx := context.Background()
+	if err := a.Prompt(ctx, "read /tmp/foo"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	want := `{"path":"/tmp/foo"}`
+	if string(rec.receivedArgs) != want {
+		t.Errorf("tool received args = %q, want %q", string(rec.receivedArgs), want)
+	}
+}
+
+func TestExecutePendingTools_EmptyArgumentsBecomeEmptyObject(t *testing.T) {
+	rec := &recordingTool{name: "write"}
+	callCount := 0
+
+	mockStream := func(ctx context.Context, _ llm.Model, _ llm.Context, _ *llm.Options) (<-chan llm.Event, error) {
+		callCount++
+		ch := make(chan llm.Event, 8)
+		if callCount == 1 {
+			ch <- llm.Event{Type: llm.EventStart}
+			ch <- llm.Event{Type: llm.EventToolCallStart, ToolCall: &llm.ToolCall{
+				ID:        "call-2",
+				Name:      "write",
+				Arguments: nil,
+			}}
+			ch <- llm.Event{Type: llm.EventToolCallEnd, ToolCall: &llm.ToolCall{
+				ID:        "call-2",
+				Name:      "write",
+				Arguments: nil,
+			}}
+			ch <- llm.Event{Type: llm.EventDone, StopReason: "toolUse"}
+		} else {
+			ch <- llm.Event{Type: llm.EventStart}
+			ch <- llm.Event{Type: llm.EventTextStart}
+			ch <- llm.Event{Type: llm.EventTextDelta, TextDelta: "Done."}
+			ch <- llm.Event{Type: llm.EventTextEnd}
+			ch <- llm.Event{Type: llm.EventDone, StopReason: "stop"}
+		}
+		close(ch)
+		return ch, nil
+	}
+
+	a := New("test", Options{
+		InitialState: AgentState{
+			Model: llm.Model{ModelSetting: config.ModelSetting{ID: "test-model"}, Provider: "test"},
+			Tools: []AgentTool{rec},
+		},
+		StreamFn: mockStream,
+	})
+	ctx := context.Background()
+	if err := a.Prompt(ctx, "write something"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	want := `{}`
+	if string(rec.receivedArgs) != want {
+		t.Errorf("tool received args = %q, want %q (empty args should normalize to {})", string(rec.receivedArgs), want)
+	}
+}
+
+func TestPrompt_DrainsSteeringThenFollowUpQueues(t *testing.T) {
+	callCount := 0
+	mockStream := func(ctx context.Context, _ llm.Model, _ llm.Context, _ *llm.Options) (<-chan llm.Event, error) {
+		callCount++
+		ch := make(chan llm.Event, 8)
+		ch <- llm.Event{Type: llm.EventStart}
+		ch <- llm.Event{Type: llm.EventTextStart}
+		ch <- llm.Event{Type: llm.EventTextDelta, TextDelta: "ok"}
+		ch <- llm.Event{Type: llm.EventTextEnd}
+		ch <- llm.Event{Type: llm.EventDone, StopReason: "stop"}
+		close(ch)
+		return ch, nil
+	}
+	a := New("test", Options{
+		InitialState: AgentState{
+			Model: llm.Model{ModelSetting: config.ModelSetting{ID: "test-model"}, Provider: "test"},
+			Tools: nil,
+		},
+		StreamFn: mockStream,
+	})
+	a.EnqueueFollowUp(AgentMessage{ID: "follow-1", Role: RoleUser, Content: "follow-up"})
+	a.EnqueueSteering(AgentMessage{ID: "steer-1", Role: RoleUser, Content: "steering"})
+	ctx := context.Background()
+	if err := a.Prompt(ctx, "first"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	state := a.State()
+	// Order: first (initial), then steering (consumed first), then follow-up.
+	var userContents []string
+	for _, m := range state.Messages {
+		if m.Role == RoleUser {
+			userContents = append(userContents, m.Content)
+		}
+	}
+	wantContents := []string{"first", "steering", "follow-up"}
+	if len(userContents) != len(wantContents) {
+		t.Errorf("user messages: %v, want %v", userContents, wantContents)
+	} else {
+		for i := range wantContents {
+			if userContents[i] != wantContents[i] {
+				t.Errorf("user message[%d] = %q, want %q", i, userContents[i], wantContents[i])
+			}
+		}
+	}
+	if callCount != 3 {
+		t.Errorf("stream called %d times, want 3 (first, steering, follow-up)", callCount)
+	}
+}
+
+func TestReplaceMessages(t *testing.T) {
+	a := New("test", Options{InitialState: AgentState{}})
+	a.AppendMessage(AgentMessage{Role: RoleUser, Content: "a"})
+	a.AppendMessage(AgentMessage{Role: RoleAssistant, Content: "b"})
+	replacement := []AgentMessage{
+		{Role: RoleUser, Content: "x"},
+		{Role: RoleAssistant, Content: "y"},
+	}
+	a.ReplaceMessages(replacement)
+	state := a.State()
+	if len(state.Messages) != 2 || state.Messages[0].Content != "x" || state.Messages[1].Content != "y" {
+		t.Errorf("ReplaceMessages: got %v", state.Messages)
+	}
+	// Caller mutating slice after ReplaceMessages should not affect agent
+	replacement[0].Content = "z"
+	if a.State().Messages[0].Content != "x" {
+		t.Errorf("ReplaceMessages should copy; agent has %q", a.State().Messages[0].Content)
+	}
+	a.ReplaceMessages(nil)
+	if len(a.State().Messages) != 0 {
+		t.Errorf("ReplaceMessages(nil): got %d messages", len(a.State().Messages))
+	}
+}
+
+func TestSetErrorAndClearError(t *testing.T) {
+	a := New("test", Options{InitialState: AgentState{}})
+	if a.State().Error != nil {
+		t.Fatal("initial error should be nil")
+	}
+	err := context.DeadlineExceeded
+	a.SetError(err)
+	if a.State().Error != err {
+		t.Errorf("SetError: got %v", a.State().Error)
+	}
+	a.ClearError()
+	if a.State().Error != nil {
+		t.Errorf("ClearError: got %v", a.State().Error)
+	}
+}
+
+func TestWaitForIdle(t *testing.T) {
+	a := New("test", Options{InitialState: AgentState{}})
+	ctx := context.Background()
+	if err := a.WaitForIdle(ctx); err != nil {
+		t.Errorf("WaitForIdle when idle: %v", err)
+	}
+	// When already idle, WaitForIdle returns nil even if ctx is cancelled (idle check is first).
+	ctxDone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.WaitForIdle(ctxDone); err != nil {
+		t.Errorf("WaitForIdle when idle with cancelled ctx: %v", err)
+	}
+}

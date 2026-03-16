@@ -9,19 +9,6 @@ const (
 	InputCapabilityImage InputCapability = "image"
 )
 
-// ReasoningCapability describes the qualitative reasoning strength of a model.
-// It is intentionally coarse-grained to stay provider-agnostic.
-type ReasoningCapability string
-
-const (
-	ReasoningNone    ReasoningCapability = "none"
-	ReasoningMinimal ReasoningCapability = "minimal"
-	ReasoningLow     ReasoningCapability = "low"
-	ReasoningMedium  ReasoningCapability = "medium"
-	ReasoningHigh    ReasoningCapability = "high"
-	ReasoningXHigh   ReasoningCapability = "xhigh"
-)
-
 type ProviderType string
 
 const (
@@ -30,33 +17,45 @@ const (
 	ProviderTypeDeepSeek              = "deepseek"
 )
 
-func GetAPIBaseURL(p ProviderType) PROVIDER_API_BASE_URL {
+func GetAPIBaseURL(p ProviderType) ProviderApiBaseUrl {
 	switch p {
 	case ProviderTypeOpenAi:
-		return OpenAiAPIBaseURL
+		return OpenAiApiBaseUrl
 	case ProviderTypeDeepSeek:
-		return DeepSeekAPIBaseURL
+		return DeepSeekApiBaseUrl
 	default:
 		return ""
 	}
 }
 
-type PROVIDER_API_BASE_URL string
+type ProviderApiBaseUrl string
 
 const (
-	// OpenAiAPIBaseURL  is the default base URL for ProviderTypeOpenAi's API.
-	OpenAiAPIBaseURL PROVIDER_API_BASE_URL = "https://api.openai.com/v1"
-	// DeepSeekAPIBaseURL is the default base URL for ProviderTypeDeepSeek's OpenAI-compatible API.
-	DeepSeekAPIBaseURL PROVIDER_API_BASE_URL = "https://api.deepseek.com"
+	// OpenAiApiBaseUrl  is the default base URL for ProviderTypeOpenAi's API.
+	OpenAiApiBaseUrl ProviderApiBaseUrl = "https://api.openai.com/v1"
+	// DeepSeekApiBaseUrl is the default base URL for ProviderTypeDeepSeek's OpenAI-compatible API.
+	DeepSeekApiBaseUrl ProviderApiBaseUrl = "https://api.deepseek.com"
 )
 
 func GetProviderTypeByAPIBaseURL(url string) ProviderType {
-	switch PROVIDER_API_BASE_URL(url) {
-	case OpenAiAPIBaseURL:
+	switch ProviderApiBaseUrl(url) {
+	case OpenAiApiBaseUrl:
 		return ProviderTypeOpenAi
-	case DeepSeekAPIBaseURL:
+	case DeepSeekApiBaseUrl:
 		return ProviderTypeDeepSeek
 	default:
 		return ProviderTypeUnknown
 	}
 }
+
+// ThinkingLevel controls reasoning intensity, similar to pi-agent-core.
+type ThinkingLevel string
+
+const (
+	ThinkingNone    ThinkingLevel = "none"
+	ThinkingMinimal ThinkingLevel = "minimal"
+	ThinkingLow     ThinkingLevel = "low"
+	ThinkingMedium  ThinkingLevel = "medium"
+	ThinkingHigh    ThinkingLevel = "high"
+	ThinkingXHigh   ThinkingLevel = "xhigh"
+)

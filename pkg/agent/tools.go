@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"acgo/pkg/llm"
 	"context"
 	"encoding/json"
 )
@@ -31,3 +32,18 @@ type AgentTool interface {
 	Execute(ctx context.Context, toolCallID string, args json.RawMessage, update ToolUpdateFunc) (ToolResult, error)
 }
 
+// agentToolsToLlm converts AgentTools to llm.Tool slice for provider options.
+func agentToolsToLlm(tools []AgentTool) []llm.Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]llm.Tool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, llm.Tool{
+			Name:        t.Name(),
+			Description: t.Description(),
+			JSONSchema:  t.JSONSchema(),
+		})
+	}
+	return out
+}

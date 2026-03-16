@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"acgo/pkg/agent"
 	"acgo/pkg/config"
 	"acgo/pkg/llm"
 	"acgo/pkg/llm/openai"
 	"acgo/pkg/log"
+	"acgo/pkg/session"
 	"acgo/pkg/tools"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -21,22 +23,26 @@ import (
 )
 
 type Model struct {
-	agent            *agent.Agent
-	textarea         textarea.Model
-	history          []string
-	streamingContent string // current assistant reply being streamed
-	streamCh         chan streamEvent
-	width            int // terminal width for wrapping
-	height           int // terminal height
-	err              error
+	agent             *agent.Agent
+	session           *session.Session
+	sessionPath       string
+	textarea          textarea.Model
+	history           []string
+	streamingContent  string
+	streamingThinking string
+	streamCh          chan streamEvent
+	width             int
+	height            int
+	err               error
 }
 
 // streamEvent is sent from the agent goroutine for each delta or done/error.
 type streamEvent struct {
-	Delta string
-	Done  bool
-	Err   error
-	Ch    chan streamEvent
+	Delta         string // text content delta
+	ThinkingDelta string // reasoning/thinking delta (pi-ai thinking_* events)
+	Done          bool
+	Err           error
+	Ch            chan streamEvent
 }
 
 func newProviderBySettings(settings config.TuiAgent) []llm.Provider {
@@ -54,22 +60,28 @@ func newProviderBySettings(settings config.TuiAgent) []llm.Provider {
 	return providers
 }
 
+// ModelOptions configures NewModel (session and optional initial messages).
+type ModelOptions struct {
+	Session         *session.Session
+	SessionPath     string
+	InitialMessages []agent.AgentMessage
+}
+
 // NewModel constructs a minimal chat TUI model wired to the Agent.
-func NewModel() (*Model, error) {
+// If opts.InitialMessages is set, the agent's history is replaced with them (e.g. after loading a session).
+func NewModel(opts *ModelOptions) (*Model, error) {
 	settings, err := config.LoadSettings()
 	if err != nil {
 		return nil, err
 	}
 	settings.Tui.LoadAndInit()
 
-	//注册所有provider
 	for _, provider := range newProviderBySettings(settings.Tui.Agent) {
 		llm.RegisterProvider(provider)
 	}
 
-	// Choose default model: DefaultModelID first, then DefaultProvider's first model, else openai.
 	var m llm.Model
-	if got, ok := llm.GetModel(settings.DefaultModelID); ok {
+	if got, ok := llm.GetModel(settings.Tui.Agent.DefaultModel); ok {
 		m = got
 	}
 	if m.ID == "" {
@@ -80,6 +92,9 @@ func NewModel() (*Model, error) {
 		tools.NewReadTool(),
 		tools.NewWriteTool(),
 		tools.NewBashTool(),
+		tools.NewEditTool(),
+		tools.NewGrepTool(),
+		tools.NewListTool(),
 	}
 
 	ag := agent.New("default", agent.Options{
@@ -89,6 +104,9 @@ func NewModel() (*Model, error) {
 			Tools:        builtinTools,
 		},
 	})
+	if opts != nil && len(opts.InitialMessages) > 0 {
+		ag.ReplaceMessages(opts.InitialMessages)
+	}
 
 	ta := textarea.New()
 	ta.Placeholder = "Ask acgo about your thoughts..."
@@ -103,7 +121,10 @@ func NewModel() (*Model, error) {
 		width:    80,
 		height:   24,
 	}
-	// Log is configured once in main; do not re-init here.
+	if opts != nil {
+		model.session = opts.Session
+		model.sessionPath = opts.SessionPath
+	}
 	return model, nil
 }
 
@@ -147,18 +168,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Err != nil {
 				log.Debugf("stream done err=%v", msg.Err)
 				m.err = msg.Err
-				m.history = append(m.history, "Error: "+msg.Err.Error())
+				m.history = append(m.history, "Error: "+agent.FormatErrorForDisplay(msg.Err))
 			} else {
-				log.Debugf("stream done content_len=%d", len(m.streamingContent))
+				log.Debugf("stream done content_len=%d thinking_len=%d", len(m.streamingContent), len(m.streamingThinking))
+				if m.streamingThinking != "" {
+					m.history = append(m.history, "[Thinking] "+m.streamingThinking)
+				}
 				if m.streamingContent != "" {
 					m.history = append(m.history, "Assistant: "+m.streamingContent)
 				}
 			}
 			m.streamingContent = ""
+			m.streamingThinking = ""
 			return m, nil
 		}
-		log.Debugf("stream delta len=%d", len(msg.Delta))
-		m.streamingContent += msg.Delta
+		if msg.ThinkingDelta != "" {
+			m.streamingThinking += msg.ThinkingDelta
+		}
+		if msg.Delta != "" {
+			log.Debugf("stream delta len=%d", len(msg.Delta))
+			m.streamingContent += msg.Delta
+		}
 		// Schedule next read from the same channel.
 		return m, m.waitForStreamEvent(msg.Ch)
 	}
@@ -173,7 +203,6 @@ func (m Model) View() string {
 	if w <= 0 {
 		w = 80
 	}
-	// Wrap history to terminal width; leave a little margin for border.
 	wrapWidth := w - 2
 	if wrapWidth < 20 {
 		wrapWidth = 20
@@ -185,17 +214,21 @@ func (m Model) View() string {
 	for _, line := range m.history {
 		body += line + "\n"
 	}
+	if m.streamingThinking != "" {
+		body += "[Thinking] " + m.streamingThinking + "▌\n"
+	}
 	if m.streamingContent != "" {
 		body += "Assistant: " + m.streamingContent + "▌"
 	}
 	if body == "" {
 		body = " "
 	}
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		historyStyle.Render(body),
-		inputStyle.Render(m.textarea.View()),
-	)
+	views := []string{}
+	if m.sessionPath != "" {
+		views = append(views, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Session: "+m.sessionPath))
+	}
+	views = append(views, historyStyle.Render(body), inputStyle.Render(m.textarea.View()))
+	return lipgloss.JoinVertical(lipgloss.Left, views...)
 }
 
 // waitForStreamEvent returns a Cmd that reads one event from ch (for streaming).
@@ -220,11 +253,28 @@ func (m *Model) runAgentStream(prompt string) tea.Cmd {
 			if done.Load() {
 				return
 			}
+			if m.session != nil && e.Message != nil {
+				switch e.Type {
+				case agent.EventMessageEnd:
+					_ = m.session.AppendMessage(agentMessageToSession(e.Message))
+				case agent.EventToolExecutionEnd:
+					_ = m.session.AppendMessage(agentMessageToSession(e.Message))
+				}
+			}
 			switch e.Type {
 			case agent.EventMessageUpdate:
-				if e.LlmEvent != nil && e.LlmEvent.TextDelta != "" {
+				if e.LlmEvent == nil {
+					return
+				}
+				if e.LlmEvent.TextDelta != "" {
 					select {
 					case ch <- streamEvent{Delta: e.LlmEvent.TextDelta, Ch: ch}:
+					default:
+					}
+				}
+				if e.LlmEvent.ThinkingDelta != "" {
+					select {
+					case ch <- streamEvent{ThinkingDelta: e.LlmEvent.ThinkingDelta, Ch: ch}:
 					default:
 					}
 				}
@@ -249,13 +299,69 @@ func (m *Model) runAgentStream(prompt string) tea.Cmd {
 	}
 }
 
-// Run launches the TUI.
-func Run() error {
-	model, err := NewModel()
+// Run launches the TUI. If sessionPath is empty, a new session file is created under config session root.
+// If sessionPath is set, that file is opened and messages are loaded into the agent.
+func Run(sessionPath string) error {
+	settings, err := config.LoadSettings()
+	if err != nil {
+		return err
+	}
+	root := settings.Session.Root
+	if root == "" {
+		home, _ := os.UserHomeDir()
+		root = home + "/.acgo/sessions"
+	}
+
+	var sess *session.Session
+	var path string
+	var initial []agent.AgentMessage
+
+	if sessionPath == "" {
+		path, err = session.NewSessionPath(root)
+		if err != nil {
+			return fmt.Errorf("create session path: %w", err)
+		}
+		sess, err = session.Create(path)
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+	} else {
+		path = sessionPath
+		sess = session.Open(path)
+		msgs, err := sess.LoadAll()
+		if err == nil && len(msgs) > 0 {
+			initial = sessionMessagesToAgent(msgs)
+		}
+	}
+
+	model, err := NewModel(&ModelOptions{Session: sess, SessionPath: path, InitialMessages: initial})
 	if err != nil {
 		return err
 	}
 	p := tea.NewProgram(model, tea.WithOutput(os.Stdout))
 	_, err = p.Run()
 	return err
+}
+
+func sessionMessagesToAgent(msgs []session.Message) []agent.AgentMessage {
+	out := make([]agent.AgentMessage, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, agent.AgentMessage{
+			ID:       m.ID,
+			Role:     agent.AgentMessageRole(m.Role),
+			Content:  m.Content,
+			Metadata: m.Metadata,
+		})
+	}
+	return out
+}
+
+func agentMessageToSession(msg *agent.AgentMessage) session.Message {
+	return session.Message{
+		ID:        msg.ID,
+		Role:      string(msg.Role),
+		Content:   msg.Content,
+		CreatedAt: time.Now().UTC(),
+		Metadata:  msg.Metadata,
+	}
 }

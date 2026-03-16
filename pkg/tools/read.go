@@ -11,9 +11,11 @@ import (
 
 type readTool struct{}
 
-func (t *readTool) Name() string        { return "read" }
-func (t *readTool) Label() string       { return "Read FilePath" }
-func (t *readTool) Description() string { return "Read file contents from disk." }
+func (t *readTool) Name() string  { return "read" }
+func (t *readTool) Label() string { return "Read FilePath" }
+func (t *readTool) Description() string {
+	return "Read file contents from disk. Use for reading source files, configs, or any text file."
+}
 
 func (t *readTool) JSONSchema() map[string]any {
 	return map[string]any{
@@ -21,7 +23,7 @@ func (t *readTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Path to the file to read",
+				"description": "Absolute or relative path to the file to read",
 			},
 		},
 		"required": []string{"path"},
@@ -46,7 +48,7 @@ func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	}
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
-		return agent.ToolResult{}, err
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 	return agent.ToolResult{
 		Content: string(data),

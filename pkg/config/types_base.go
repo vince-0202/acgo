@@ -14,6 +14,13 @@ type Settings struct {
 	APIKeys         map[string]string `mapstructure:"api_keys"`
 	Log             Log               `mapstructure:"log"`
 	Tui             Tui               `mapstructure:"tui"`
+	Session         SessionConfig     `mapstructure:"session"`
+}
+
+// SessionConfig holds session storage settings.
+type SessionConfig struct {
+	// Root is the directory for session JSONL files (default: ~/.acgo/sessions).
+	Root string `mapstructure:"root"`
 }
 
 type ProviderSetting struct {
@@ -55,13 +62,13 @@ func newDefaultDeepseekProviderSetting() *ProviderSetting {
 }
 
 type ModelSetting struct {
-	ID            string                   `mapstructure:"id"`             // unique identifier within Provider
-	Name          string                   `mapstructure:"name"`           // human readable name
-	API           string                   `mapstructure:"api"`            // underlying API family (e.g. openai-chat, openai-responses)
-	ContextWindow int                      `mapstructure:"context_window"` // approximate context window in tokens
-	MaxTokens     int                      `mapstructure:"max_tokens"`     // maximum generation tokens
-	Input         []keys.InputCapability   `mapstructure:"input"`          // supported input modalities
-	Reasoning     keys.ReasoningCapability `mapstructure:"reasoning"`      // reasoning capability level
+	ID            string                 `mapstructure:"id"`             // unique identifier within Provider
+	Name          string                 `mapstructure:"name"`           // human readable name
+	API           string                 `mapstructure:"api"`            // underlying API family (e.g. openai-chat, openai-responses)
+	ContextWindow int                    `mapstructure:"context_window"` // approximate context window in tokens
+	MaxTokens     int                    `mapstructure:"max_tokens"`     // maximum generation tokens
+	Input         []keys.InputCapability `mapstructure:"input"`          // supported input modalities
+	Reasoning     keys.ThinkingLevel     `mapstructure:"reasoning"`      // reasoning capability level
 }
 
 func NewDefaultModelsByProvider(providerType keys.ProviderType) []ModelSetting {
@@ -83,7 +90,7 @@ func defaultOpenAIModels() []ModelSetting {
 			ContextWindow: 128_000,
 			MaxTokens:     16_000,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
-			Reasoning:     keys.ReasoningLow,
+			Reasoning:     keys.ThinkingLow,
 		},
 	}
 }
@@ -92,22 +99,22 @@ func defaultOpenAIModels() []ModelSetting {
 func DefaultDeepSeekModels() []ModelSetting {
 	return []ModelSetting{
 		{
-			ID:            "deepseek-chat",
-			Name:          "ProviderTypeDeepSeek Chat",
-			API:           "chat-completions",
-			ContextWindow: 64_000,
-			MaxTokens:     8_192,
-			Input:         []keys.InputCapability{keys.InputCapabilityText},
-			Reasoning:     keys.ReasoningNone,
-		},
-		{
 			ID:            "deepseek-reasoner",
 			Name:          "ProviderTypeDeepSeek Reasoner",
 			API:           "chat-completions",
 			ContextWindow: 64_000,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
-			Reasoning:     keys.ReasoningHigh,
+			Reasoning:     keys.ThinkingHigh,
+		},
+		{
+			ID:            "deepseek-chat",
+			Name:          "ProviderTypeDeepSeek Chat",
+			API:           "chat-completions",
+			ContextWindow: 64_000,
+			MaxTokens:     8_192,
+			Input:         []keys.InputCapability{keys.InputCapabilityText},
+			Reasoning:     keys.ThinkingNone,
 		},
 	}
 }
@@ -116,7 +123,7 @@ func DefaultDeepSeekModels() []ModelSetting {
 type Log struct {
 	// Level is the log verbosity: "error", "warn", "info", "debug". Default "info".
 	Level string `mapstructure:"level"`
-	// FilePath is the path for log output; all levels are written here. Empty means stderr. Default "~/.acto/acto.log".
+	// FilePath is the path for log output; all levels are written here. Empty means stderr. Default "~/.acgo/acgo.log".
 	FilePath string `mapstructure:"file_path"`
 }
 
@@ -138,7 +145,7 @@ func (s *Log) loadAndInit() {
 	}
 	if s.FilePath == "" {
 		home, _ := os.UserHomeDir()
-		s.FilePath = filepath.Join(home, ".acto", "acto.log")
+		s.FilePath = filepath.Join(home, ".acgo", "acgo.log")
 	} else if strings.HasPrefix(s.FilePath, "~") {
 		s.FilePath = expandHome(s.FilePath)
 	}

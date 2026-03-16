@@ -7,7 +7,7 @@ build:
 
 # Build and run. Usage: make run [ARGS="chat"] or make run ARGS="print hello"
 run: build
-	./dist/pigo $(if $(ARGS),$(ARGS),chat)
+	./dist/acgo $(if $(ARGS),$(ARGS),chat)
 
 # Remove build output
 clean:

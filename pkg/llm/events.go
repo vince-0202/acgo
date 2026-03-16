@@ -26,11 +26,12 @@ type Event struct {
 	ToolCall      *ToolCall // for toolcall_* events
 	Error         error     // for error events
 	StopReason    string    // for done events ("stop", "length", "toolUse", "error", "aborted", ...)
+	Usage         *Usage    // optional usage info, typically set on the final done event
 }
 
 // Usage optionally tracks token usage for a call.
 type Usage struct {
 	InputTokens  int `json:"input_tokens,omitempty"`
 	OutputTokens int `json:"output_tokens,omitempty"`
+	TotalTokens  int `json:"total_tokens,omitempty"`
 }
-

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"acgo/pkg/keys"
 	"acgo/pkg/llm"
 )
 
@@ -15,33 +16,11 @@ const (
 	RoleNotification AgentMessageRole = "notification"
 )
 
-// AgentMessage is the application-facing message type.
-type AgentMessage struct {
-	ID         string           // unique identifier within a session
-	Role       AgentMessageRole // logical role
-	Content    string           // rendered text content (for UI)
-	ToolCallID string           // when Role is RoleTool, required for OpenAI-style APIs
-	LlmMessage *llm.Message     // backing LLM message when applicable
-	IsError    bool             // whether this message represents an error
-	Metadata   map[string]any   // arbitrary metadata
-}
-
-// ThinkingLevel controls reasoning intensity, similar to pi-agent-core.
-type ThinkingLevel string
-
-const (
-	ThinkingMinimal ThinkingLevel = "minimal"
-	ThinkingLow     ThinkingLevel = "low"
-	ThinkingMedium  ThinkingLevel = "medium"
-	ThinkingHigh    ThinkingLevel = "high"
-	ThinkingXHigh   ThinkingLevel = "xhigh"
-)
-
 // AgentState holds the mutable state of an Agent instance.
 type AgentState struct {
 	SystemPrompt  string
 	Model         llm.Model
-	ThinkingLevel ThinkingLevel
+	ThinkingLevel keys.ThinkingLevel
 	Tools         []AgentTool
 	Messages      []AgentMessage
 
@@ -49,4 +28,20 @@ type AgentState struct {
 	StreamMessage    *AgentMessage
 	PendingToolCalls []llm.ToolCall
 	Error            error
+	LastErrorKind    ErrKind // classification of Error for UI
+
+	// LastUsage captures the most recent token usage reported by the LLM
+	// provider for a completed turn, if available.
+	LastUsage *llm.Usage
+
+	// LastStopReason records the last completion stop reason reported by
+	// the provider (e.g. "stop", "length", "toolUse", "error", "aborted").
+	LastStopReason string
+
+	// SteeringQueue holds user/steering messages to process next; consumed before FollowUpQueue.
+	// When the agent is busy, callers may enqueue here; after the current turn ends, these are processed first.
+	SteeringQueue []AgentMessage
+
+	// FollowUpQueue holds follow-up messages; consumed after SteeringQueue is empty.
+	FollowUpQueue []AgentMessage
 }
