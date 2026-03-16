@@ -2,12 +2,14 @@ package openai
 
 import (
 	"acgo/pkg/config"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"acgo/pkg/keys"
@@ -157,57 +159,251 @@ type openAITool struct {
 	Function openAIFunction `json:"function"`
 }
 
+// streamChunk is one SSE data item from chat/completions with stream=true.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"` // DeepSeek
+			ToolCalls        []struct {
+				Index    int `json:"index"`
+				ID       string
+				Type     string
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}
+			} `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
+}
+
 type openAIFunction struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
-// Stream implements llm.Provider.Stream.
-// For the MVP we implement streaming by internally performing a non-streaming call
-// and emitting a small sequence of llm.Event values.
-func (c *Client) Stream(ctx context.Context, model llm.Model, context llm.Context, opts *llm.Options) (<-chan llm.Event, error) {
+// Stream implements llm.Provider.Stream using real SSE when the API supports it.
+// For models that return reasoning_content (e.g. DeepSeek), EventThinkingStart/Delta/End are emitted as chunks arrive.
+func (c *Client) Stream(ctx context.Context, model llm.Model, llmCtx llm.Context, opts *llm.Options) (<-chan llm.Event, error) {
 	out := make(chan llm.Event)
 	go func() {
 		defer close(out)
-
-		msg, usage, err := c.Complete(ctx, model, context, opts)
-		if err != nil {
-			out <- llm.Event{Type: llm.EventError, Error: err}
-			return
-		}
-		out <- llm.Event{Type: llm.EventStart}
-
-		// If the model requested a tool, emit toolcall events instead of text.
-		if msg.ToolCall != nil {
-			out <- llm.Event{Type: llm.EventToolCallStart, ToolCall: msg.ToolCall}
-			out <- llm.Event{Type: llm.EventToolCallEnd, ToolCall: msg.ToolCall}
-			out <- llm.Event{Type: llm.EventDone, StopReason: "toolUse", Usage: &usage}
-			return
-		}
-
-		// Emit thinking events when DeepSeek (or other) returns reasoning_content.
-		if msg.Thinking != "" {
-			out <- llm.Event{Type: llm.EventThinkingStart}
-			out <- llm.Event{Type: llm.EventThinkingDelta, ThinkingDelta: msg.Thinking}
-			out <- llm.Event{Type: llm.EventThinkingEnd}
-		}
-
-		out <- llm.Event{Type: llm.EventTextStart}
-		// Emit the full content as a single delta for now.
-		var fullText string
-		for _, block := range msg.Content {
-			if block.Type == "text" {
-				fullText += block.Text
-			}
-		}
-		if fullText != "" {
-			out <- llm.Event{Type: llm.EventTextDelta, TextDelta: fullText}
-		}
-		out <- llm.Event{Type: llm.EventTextEnd}
-		out <- llm.Event{Type: llm.EventDone, StopReason: "stop", Usage: &usage}
+		c.streamSSE(ctx, model, llmCtx, opts, out)
 	}()
 	return out, nil
+}
+
+func (c *Client) streamSSE(ctx context.Context, model llm.Model, llmCtx llm.Context, opts *llm.Options, out chan<- llm.Event) {
+	body, err := c.buildStreamRequest(model, llmCtx, opts)
+	if err != nil {
+		out <- llm.Event{Type: llm.EventError, Error: err}
+		return
+	}
+	resp, err := c.doStreamHTTP(ctx, body, out)
+	if err != nil {
+		out <- llm.Event{Type: llm.EventError, Error: err}
+		return
+	}
+	if resp == nil {
+		return
+	}
+	defer resp.Body.Close()
+	out <- llm.Event{Type: llm.EventStart}
+
+	state := &sseStreamState{}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(nil, 1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			break
+		}
+		var chunk streamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil || len(chunk.Choices) == 0 {
+			continue
+		}
+		if state.processChunk(&chunk, out) {
+			return
+		}
+	}
+	state.emitEnd(out)
+	if err := sc.Err(); err != nil {
+		out <- llm.Event{Type: llm.EventError, Error: err}
+		return
+	}
+	out <- llm.Event{Type: llm.EventDone, StopReason: "stop", Usage: &state.usage}
+}
+
+// buildStreamRequest builds the request body for a streaming chat completion.
+func (c *Client) buildStreamRequest(model llm.Model, llmCtx llm.Context, opts *llm.Options) ([]byte, error) {
+	reqBody := chatCompletionRequest{
+		Model:    model.ID,
+		Messages: convertMessages(llmCtx.Messages),
+		Stream:   true,
+	}
+	if opts != nil {
+		reqBody.Temperature = opts.Temperature
+		reqBody.MaxTokens = opts.MaxOutputTokens
+		reqBody.Stop = opts.StopSequences
+		if len(opts.Tools) > 0 {
+			reqBody.Tools = convertTools(opts.Tools)
+			if opts.ToolChoice != "" {
+				reqBody.ToolChoice = opts.ToolChoice
+			}
+		}
+		reqBody.Metadata = opts.Metadata
+		if model.Reasoning != keys.ThinkingNone || opts.ReasoningEffort != keys.ThinkingNone {
+			reqBody.Thinking = &deepSeekThinking{Type: "enabled"}
+		}
+	}
+	return json.Marshal(reqBody)
+}
+
+// doStreamHTTP performs the HTTP request for streaming. On non-2xx it emits EventError and returns (nil, nil).
+func (c *Client) doStreamHTTP(ctx context.Context, body []byte, out chan<- llm.Event) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(keys.ContentType, "application/json")
+	req.Header.Set(keys.Authorization, "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		out <- llm.Event{Type: llm.EventError, Error: fmt.Errorf("openai API %d: %s", resp.StatusCode, string(respBody))}
+		return nil, nil
+	}
+	return resp, nil
+}
+
+// sseStreamState holds accumulated state while processing an SSE stream.
+type sseStreamState struct {
+	thinkingStarted bool
+	textStarted     bool
+	toolCallArgs    []string
+	toolCallID      string
+	toolCallName    string
+	usage           llm.Usage
+}
+
+// processChunk handles one SSE chunk: emits thinking/text/toolcall events and updates state.
+// Returns true if the stream is done (finish_reason was set).
+func (s *sseStreamState) processChunk(chunk *streamChunk, out chan<- llm.Event) bool {
+	choice := &chunk.Choices[0]
+	delta := &choice.Delta
+
+	if delta.ReasoningContent != "" {
+		if !s.thinkingStarted {
+			s.thinkingStarted = true
+			out <- llm.Event{Type: llm.EventThinkingStart}
+		}
+		out <- llm.Event{Type: llm.EventThinkingDelta, ThinkingDelta: delta.ReasoningContent}
+	}
+	if delta.Content != "" {
+		if s.thinkingStarted {
+			out <- llm.Event{Type: llm.EventThinkingEnd}
+			s.thinkingStarted = false
+		}
+		if !s.textStarted {
+			s.textStarted = true
+			out <- llm.Event{Type: llm.EventTextStart}
+		}
+		out <- llm.Event{Type: llm.EventTextDelta, TextDelta: delta.Content}
+	}
+	s.applyToolCallDeltas(chunk)
+	if chunk.Usage != nil {
+		s.usage.InputTokens = chunk.Usage.PromptTokens
+		s.usage.OutputTokens = chunk.Usage.CompletionTokens
+		s.usage.TotalTokens = chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens
+	}
+	if choice.FinishReason != "" {
+		s.emitFinish(choice.FinishReason, chunk, out)
+		return true
+	}
+	return false
+}
+
+func (s *sseStreamState) applyToolCallDeltas(chunk *streamChunk) {
+	if len(chunk.Choices) == 0 {
+		return
+	}
+	delta := &chunk.Choices[0].Delta
+	for i := range delta.ToolCalls {
+		tc := &delta.ToolCalls[i]
+		if tc.Index >= len(s.toolCallArgs) {
+			for len(s.toolCallArgs) <= tc.Index {
+				s.toolCallArgs = append(s.toolCallArgs, "")
+			}
+		}
+		if tc.ID != "" {
+			s.toolCallID = tc.ID
+		}
+		if tc.Function.Name != "" {
+			s.toolCallName = tc.Function.Name
+		}
+		if tc.Function.Arguments != "" {
+			s.toolCallArgs[tc.Index] += tc.Function.Arguments
+		}
+	}
+}
+
+// emitFinish emits events for end of stream (finish_reason set) and the final Done event.
+func (s *sseStreamState) emitFinish(finishReason string, chunk *streamChunk, out chan<- llm.Event) {
+	if s.thinkingStarted {
+		out <- llm.Event{Type: llm.EventThinkingEnd}
+	}
+	if finishReason == "tool_calls" && s.toolCallName != "" {
+		args := ""
+		if len(s.toolCallArgs) > 0 {
+			args = s.toolCallArgs[0]
+		}
+		tc := &llm.ToolCall{
+			ID:        s.toolCallID,
+			Name:      s.toolCallName,
+			Arguments: llm.NormalizeToolCallArguments(json.RawMessage(args)),
+		}
+		out <- llm.Event{Type: llm.EventToolCallStart, ToolCall: tc}
+		out <- llm.Event{Type: llm.EventToolCallEnd, ToolCall: tc}
+	} else {
+		if !s.textStarted {
+			out <- llm.Event{Type: llm.EventTextStart}
+		}
+		out <- llm.Event{Type: llm.EventTextEnd}
+	}
+	if chunk.Usage != nil {
+		s.usage.InputTokens = chunk.Usage.PromptTokens
+		s.usage.OutputTokens = chunk.Usage.CompletionTokens
+		s.usage.TotalTokens = chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens
+	}
+	out <- llm.Event{Type: llm.EventDone, StopReason: finishReason, Usage: &s.usage}
+}
+
+// emitEnd emits ThinkingEnd/TextEnd when the stream ends without a finish_reason (e.g. [DONE]).
+func (s *sseStreamState) emitEnd(out chan<- llm.Event) {
+	if s.thinkingStarted {
+		out <- llm.Event{Type: llm.EventThinkingEnd}
+	}
+	if s.textStarted {
+		out <- llm.Event{Type: llm.EventTextEnd}
+	} else if !s.thinkingStarted && s.toolCallID == "" {
+		out <- llm.Event{Type: llm.EventTextStart}
+		out <- llm.Event{Type: llm.EventTextEnd}
+	}
 }
 
 // Complete implements llm.Provider.Complete using the Chat Completions API.
@@ -254,8 +450,8 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, context llm.Cont
 	if err != nil {
 		return llm.Message{}, llm.Usage{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set(keys.ContentType, "application/json")
+	req.Header.Set(keys.Authorization, "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

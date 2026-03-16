@@ -6,11 +6,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"acgo/pkg/agent"
 	"acgo/pkg/config"
+	"acgo/pkg/contextfile"
 	"acgo/pkg/llm"
 	"acgo/pkg/llm/openai"
 	"acgo/pkg/log"
@@ -97,9 +99,15 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		tools.NewListTool(),
 	}
 
+	workDir, _ := os.Getwd()
+	ctxResult := contextfile.Load(workDir)
+	for _, p := range ctxResult.Paths {
+		log.Debugf("context file loaded: %s", p)
+	}
+
 	ag := agent.New("default", agent.Options{
 		InitialState: agent.AgentState{
-			SystemPrompt: "You are a helpful coding assistant.",
+			SystemPrompt: ctxResult.Prompt,
 			Model:        m,
 			Tools:        builtinTools,
 		},
@@ -148,19 +156,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetWidth(msg.Width)
 		return m, nil
 	case tea.KeyMsg:
+		st := m.agent.State()
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			if st.IsStreaming {
+				m.agent.Abort()
+				return m, nil
+			}
 			return m, tea.Quit
 		case "enter":
 			if m.textarea.Focused() {
-				input := m.textarea.Value()
-				m.textarea.SetValue("")
+				input := strings.TrimSpace(m.textarea.Value())
 				if input == "" {
 					return m, nil
 				}
+				if st.IsStreaming {
+					// P0.4: Agent 忙时 Enter = steering 入队
+					msg := agent.AgentMessage{Role: agent.RoleUser, Content: m.textarea.Value()}
+					m.agent.EnqueueSteering(msg)
+					m.textarea.SetValue("")
+					m.history = append(m.history, "You: (steering) "+input)
+					return m, nil
+				}
+				if strings.HasPrefix(input, "/") {
+					// P0.2: 命令解析
+					reply, quit := m.runCommand(m.textarea.Value())
+					m.textarea.SetValue("")
+					if quit {
+						return m, tea.Quit
+					}
+					m.history = append(m.history, "> "+reply)
+					return m, nil
+				}
+				m.textarea.SetValue("")
 				log.Debugf("send prompt len=%d", len(input))
 				m.history = append(m.history, "You: "+input)
 				return m, m.runAgentStream(input)
+			}
+		case "alt+enter":
+			if m.textarea.Focused() {
+				input := strings.TrimSpace(m.textarea.Value())
+				if input == "" {
+					return m, nil
+				}
+				if st.IsStreaming {
+					// P0.4: Agent 忙时 Alt+Enter = follow-up 入队
+					msg := agent.AgentMessage{Role: agent.RoleUser, Content: m.textarea.Value()}
+					m.agent.EnqueueFollowUp(msg)
+					m.textarea.SetValue("")
+					m.history = append(m.history, "You: (follow-up) "+input)
+					return m, nil
+				}
+				// 非 streaming 时 alt+enter 不发送，交给 textarea 处理换行
 			}
 		}
 	case streamEvent:
@@ -198,6 +245,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// thinkingStyle is used for Thinking label and content: lighter gray, faint for a secondary look.
+var thinkingStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("246")).
+	Faint(true)
+
 func (m Model) View() string {
 	w := m.width
 	if w <= 0 {
@@ -212,10 +264,14 @@ func (m Model) View() string {
 
 	body := ""
 	for _, line := range m.history {
-		body += line + "\n"
+		if strings.HasPrefix(line, "[Thinking] ") {
+			body += thinkingStyle.Render(line) + "\n"
+		} else {
+			body += line + "\n"
+		}
 	}
 	if m.streamingThinking != "" {
-		body += "[Thinking] " + m.streamingThinking + "▌\n"
+		body += thinkingStyle.Render("[Thinking] "+m.streamingThinking+"▌") + "\n"
 	}
 	if m.streamingContent != "" {
 		body += "Assistant: " + m.streamingContent + "▌"
@@ -224,11 +280,86 @@ func (m Model) View() string {
 		body = " "
 	}
 	views := []string{}
+	// P0.5: 状态行（当前模型、streaming、错误）+ 可选 Session 路径
+	status := m.statusLine()
 	if m.sessionPath != "" {
-		views = append(views, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Session: "+m.sessionPath))
+		status = "Session: " + m.sessionPath + " | " + status
 	}
+	views = append(views, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(status))
 	views = append(views, historyStyle.Render(body), inputStyle.Render(m.textarea.View()))
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
+}
+
+// runCommand parses "/command [args]" and returns (reply string, quit bool).
+// Used for /model, /session, /reset, /settings, /quit.
+func (m *Model) runCommand(raw string) (reply string, quit bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "/") {
+		return "not a command", false
+	}
+	parts := strings.Fields(raw)
+	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+	var arg string
+	if len(parts) > 1 {
+		arg = strings.Join(parts[1:], " ")
+	}
+	switch cmd {
+	case "quit", "q":
+		return "", true
+	case "model":
+		if arg != "" {
+			if mod, ok := llm.GetModel(strings.TrimSpace(arg)); ok {
+				m.agent.SetModel(mod)
+				return "model: " + mod.Provider + "/" + mod.ID, false
+			}
+			return "unknown model: " + arg, false
+		}
+		models := llm.ListModels()
+		var b strings.Builder
+		cur := m.agent.State().Model
+		b.WriteString("current: " + cur.Provider + "/" + cur.ID + "\n")
+		for _, mod := range models {
+			b.WriteString("  " + mod.Provider + "/" + mod.ID)
+			if mod.ID == cur.ID && mod.Provider == cur.Provider {
+				b.WriteString(" (current)")
+			}
+			b.WriteString("\n")
+		}
+		return strings.TrimSuffix(b.String(), "\n"), false
+	case "session":
+		if m.sessionPath != "" {
+			return "session: " + m.sessionPath, false
+		}
+		return "no session", false
+	case "reset":
+		m.agent.Reset()
+		m.err = nil
+		m.history = nil
+		m.streamingContent = ""
+		m.streamingThinking = ""
+		return "reset done", false
+	case "settings":
+		home, _ := os.UserHomeDir()
+		return "config: " + home + "/.acgo/settings.yaml", false
+	default:
+		return "unknown command: /" + cmd + " (try /model, /session, /reset, /settings, /quit)", false
+	}
+}
+
+// statusLine returns a one-line status: model, streaming, last error (P0.5).
+func (m *Model) statusLine() string {
+	st := m.agent.State()
+	var parts []string
+	parts = append(parts, st.Model.Provider+"/"+st.Model.ID)
+	if st.IsStreaming {
+		parts = append(parts, "streaming")
+	} else {
+		parts = append(parts, "idle")
+	}
+	if st.Error != nil {
+		parts = append(parts, agent.FormatErrorForDisplay(st.Error))
+	}
+	return strings.Join(parts, " | ")
 }
 
 // waitForStreamEvent returns a Cmd that reads one event from ch (for streaming).

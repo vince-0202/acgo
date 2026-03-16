@@ -2,13 +2,14 @@ package session
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
+
+	"acgo/pkg/keys"
+	"acgo/pkg/utils"
 )
 
 // Message is a single entry in a session log.
@@ -77,21 +78,16 @@ func (s *Session) LoadAll() ([]Message, error) {
 	return result, nil
 }
 
-// NewSessionPath returns a new session file path under root with format YYYYMMDD-HHMMSS-<random>.jsonl.
+// NewSessionPath returns a new session file path under root with format <snowflake_id>.jsonl.
 func NewSessionPath(root string) (string, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", err
 	}
-	now := time.Now().UTC()
-	prefix := now.Format("20060102-150405")
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return filepath.Join(root, fmt.Sprintf("%s-%s.jsonl", prefix, hex.EncodeToString(b))), nil
+	id := utils.NextID(keys.IdKindSnowflake)
+	return filepath.Join(root, id+".jsonl"), nil
 }
 
-// List returns paths of session files in root (JSONL files), newest first by name.
+// List returns paths of session files in root (JSONL files), newest first by modification time.
 func List(root string) ([]string, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
@@ -107,9 +103,27 @@ func List(root string) ([]string, error) {
 		}
 		paths = append(paths, filepath.Join(root, e.Name()))
 	}
-	// newest first (filename sort gives chronological order for YYYYMMDD-HHMMSS-*)
-	for i, j := 0, len(paths)-1; i < j; i, j = i+1, j-1 {
-		paths[i], paths[j] = paths[j], paths[i]
-	}
+	// newest first by ModTime (session files are named by snowflake ID)
+	sortPathsByModTime(paths)
 	return paths, nil
+}
+
+func sortPathsByModTime(paths []string) {
+	type pathTime struct {
+		path string
+		mod  int64
+	}
+	pts := make([]pathTime, len(paths))
+	for i, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			pts[i] = pathTime{p, 0}
+			continue
+		}
+		pts[i] = pathTime{p, info.ModTime().UnixNano()}
+	}
+	sort.Slice(pts, func(i, j int) bool { return pts[j].mod < pts[i].mod }) // newest first
+	for i := range paths {
+		paths[i] = pts[i].path
+	}
 }
