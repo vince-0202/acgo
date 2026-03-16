@@ -50,7 +50,7 @@ func NewClient(setting *config.ProviderSetting, opts ...ClientOption) llm.Provid
 		apiKey:   setting.ApiKey,
 		models:   make([]llm.Model, 0, len(setting.Models)),
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 120 * time.Second,
 		},
 	}
 	for _, o := range opts {
@@ -206,6 +206,11 @@ func (c *Client) streamSSE(ctx context.Context, model llm.Model, llmCtx llm.Cont
 		out <- llm.Event{Type: llm.EventError, Error: err}
 		return
 	}
+	log.Debugf("[llm] stream call model=%s provider=%s messages=%d", model.ID, c.provider, len(llmCtx.Messages))
+	if opts != nil && len(opts.Tools) > 0 {
+		log.Debugf("[llm] stream tools=%d names=%v", len(opts.Tools), toolNames(opts.Tools))
+	}
+	log.Debugf("[llm] stream request body:\n%s", truncate(string(body), maxLogBodyLen))
 	resp, err := c.doStreamHTTP(ctx, body, out)
 	if err != nil {
 		out <- llm.Event{Type: llm.EventError, Error: err}
@@ -293,12 +298,14 @@ func (c *Client) doStreamHTTP(ctx context.Context, body []byte, out chan<- llm.E
 
 // sseStreamState holds accumulated state while processing an SSE stream.
 type sseStreamState struct {
-	thinkingStarted bool
-	textStarted     bool
-	toolCallArgs    []string
-	toolCallID      string
-	toolCallName    string
-	usage           llm.Usage
+	thinkingStarted     bool
+	textStarted         bool
+	toolCallArgs        []string
+	toolCallID          string
+	toolCallName        string
+	usage               llm.Usage
+	accumulatedThinking string // for debug log at end
+	accumulatedText     string // for debug log at end
 }
 
 // processChunk handles one SSE chunk: emits thinking/text/toolcall events and updates state.
@@ -308,6 +315,7 @@ func (s *sseStreamState) processChunk(chunk *streamChunk, out chan<- llm.Event) 
 	delta := &choice.Delta
 
 	if delta.ReasoningContent != "" {
+		s.accumulatedThinking += delta.ReasoningContent
 		if !s.thinkingStarted {
 			s.thinkingStarted = true
 			out <- llm.Event{Type: llm.EventThinkingStart}
@@ -315,6 +323,7 @@ func (s *sseStreamState) processChunk(chunk *streamChunk, out chan<- llm.Event) 
 		out <- llm.Event{Type: llm.EventThinkingDelta, ThinkingDelta: delta.ReasoningContent}
 	}
 	if delta.Content != "" {
+		s.accumulatedText += delta.Content
 		if s.thinkingStarted {
 			out <- llm.Event{Type: llm.EventThinkingEnd}
 			s.thinkingStarted = false

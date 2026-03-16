@@ -23,7 +23,7 @@ type Event struct {
 	Type      EventType
 	AgentID   string
 	TurnID    string
-	Message   *AgentMessage
+	Message   *Message
 	ToolName  string
 	LlmEvent  *llm.Event
 	Error     error

@@ -11,20 +11,20 @@ import (
 
 // Options configures an Agent instance.
 type Options struct {
-	InitialState     AgentState
+	InitialState     State
 	StreamFn         llm.StreamFunc
-	ConvertToLlm     func([]AgentMessage) []llm.Message
-	TransformContext func([]AgentMessage, context.Context) []AgentMessage
+	ConvertToLlm     func([]Message) []llm.Message
+	TransformContext func([]Message, context.Context) []Message
 }
 
 // Agent coordinates LLM calls, tools and state updates.
 type Agent struct {
 	id       string
-	state    AgentState
+	state    State
 	streamFn llm.StreamFunc
 
-	convertToLlm     func([]AgentMessage) []llm.Message
-	transformContext func([]AgentMessage, context.Context) []AgentMessage
+	convertToLlm     func([]Message) []llm.Message
+	transformContext func([]Message, context.Context) []Message
 
 	listenersMu    sync.RWMutex
 	listeners      []listenerSlot
@@ -67,7 +67,7 @@ func New(id string, opts Options) *Agent {
 }
 
 // State returns a copy of the current state.
-func (a *Agent) State() AgentState {
+func (a *Agent) State() State {
 	return a.state
 }
 
@@ -123,7 +123,7 @@ func (a *Agent) SetTools(tools []AgentTool) {
 }
 
 // AppendMessage appends a message to the history.
-func (a *Agent) AppendMessage(msg AgentMessage) {
+func (a *Agent) AppendMessage(msg Message) {
 	a.state.Messages = append(a.state.Messages, msg)
 }
 
@@ -134,12 +134,12 @@ func (a *Agent) ClearMessages() {
 
 // ReplaceMessages replaces the entire message history with a copy of msgs.
 // Callers can use this to load a session or batch-replace history.
-func (a *Agent) ReplaceMessages(msgs []AgentMessage) {
+func (a *Agent) ReplaceMessages(msgs []Message) {
 	if msgs == nil {
 		a.state.Messages = nil
 		return
 	}
-	a.state.Messages = append([]AgentMessage(nil), msgs...)
+	a.state.Messages = append([]Message(nil), msgs...)
 }
 
 // SetError sets the agent's error state (e.g. after a failed LLM or tool call).
@@ -187,14 +187,14 @@ func (a *Agent) Reset() {
 
 // EnqueueSteering adds a message to the steering queue. When the agent is busy,
 // callers can enqueue; after the current turn ends, steering messages are consumed first.
-func (a *Agent) EnqueueSteering(msg AgentMessage) {
+func (a *Agent) EnqueueSteering(msg Message) {
 	a.queueMu.Lock()
 	defer a.queueMu.Unlock()
 	a.state.SteeringQueue = append(a.state.SteeringQueue, msg)
 }
 
 // EnqueueFollowUp adds a message to the follow-up queue. Consumed after SteeringQueue is empty.
-func (a *Agent) EnqueueFollowUp(msg AgentMessage) {
+func (a *Agent) EnqueueFollowUp(msg Message) {
 	a.queueMu.Lock()
 	defer a.queueMu.Unlock()
 	a.state.FollowUpQueue = append(a.state.FollowUpQueue, msg)
@@ -202,7 +202,7 @@ func (a *Agent) EnqueueFollowUp(msg AgentMessage) {
 
 // drainOneFromQueues removes and returns one message: steering first, then follow-up.
 // Caller must not hold queueMu.
-func (a *Agent) drainOneFromQueues() *AgentMessage {
+func (a *Agent) drainOneFromQueues() *Message {
 	a.queueMu.Lock()
 	defer a.queueMu.Unlock()
 	if len(a.state.SteeringQueue) > 0 {
@@ -224,9 +224,9 @@ func (a *Agent) drainOneFromQueues() *AgentMessage {
 // messages are consumed (steering first, then follow-up) and processed before returning.
 func (a *Agent) Prompt(ctx context.Context, content string) error {
 	turnID := time.Now().UTC().Format(time.RFC3339Nano)
-	userMsg := AgentMessage{
+	userMsg := Message{
 		ID:      "user-" + turnID,
-		Role:    RoleUser,
+		Role:    keys.AgentRoleUser,
 		Content: content,
 	}
 	a.AppendMessage(userMsg)
@@ -260,7 +260,7 @@ func (a *Agent) Prompt(ctx context.Context, content string) error {
 }
 
 // emitUserMessage emits MessageStart and MessageEnd for a user message.
-func (a *Agent) emitUserMessage(turnID string, msg *AgentMessage) {
+func (a *Agent) emitUserMessage(turnID string, msg *Message) {
 	a.emit(Event{Type: EventMessageStart, AgentID: a.id, TurnID: turnID, Message: msg})
 	a.emit(Event{Type: EventMessageEnd, AgentID: a.id, TurnID: turnID, Message: msg})
 }
@@ -320,7 +320,7 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 		return streamErr, false
 	}
 
-	assistant := AgentMessage{ID: "assistant-" + turnID, Role: RoleAssistant}
+	assistant := Message{ID: "assistant-" + turnID, Role: keys.AgentRoleAssistant}
 	a.state.StreamMessage = &assistant
 	a.emit(Event{Type: EventMessageStart, AgentID: a.id, TurnID: turnID, Message: &assistant})
 
@@ -357,7 +357,7 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 }
 
 // processStreamEvents consumes the event channel and updates assistant state; emits MessageUpdate events.
-func (a *Agent) processStreamEvents(events <-chan llm.Event, assistant *AgentMessage, turnID string) (lastDone *llm.Event, lastErr error) {
+func (a *Agent) processStreamEvents(events <-chan llm.Event, assistant *Message, turnID string) (lastDone *llm.Event, lastErr error) {
 	for ev := range events {
 		switch ev.Type {
 		case llm.EventTextDelta:
@@ -446,9 +446,9 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 	for _, call := range calls {
 		tool := a.findTool(call.Name)
 		if tool == nil {
-			toolMsg := AgentMessage{
+			toolMsg := Message{
 				ID:         "tool-" + call.ID,
-				Role:       RoleTool,
+				Role:       keys.AgentRoleTool,
 				Content:    "unknown tool: " + call.Name,
 				ToolCallID: call.ID,
 				IsError:    true,
@@ -481,9 +481,9 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 			}
 		}
 
-		toolMsg := AgentMessage{
+		toolMsg := Message{
 			ID:         "tool-" + call.ID,
-			Role:       RoleTool,
+			Role:       keys.AgentRoleTool,
 			Content:    result.Content,
 			ToolCallID: call.ID,
 			IsError:    result.IsError,
@@ -500,4 +500,34 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 			ErrorKind: ErrKindTool,
 		})
 	}
+}
+
+// State AgentState holds the mutable state of an Agent instance.
+type State struct {
+	SystemPrompt  string
+	Model         llm.Model
+	ThinkingLevel keys.ThinkingLevel
+	Tools         []AgentTool
+	Messages      []Message
+
+	IsStreaming      bool
+	StreamMessage    *Message
+	PendingToolCalls []llm.ToolCall
+	Error            error
+	LastErrorKind    ErrKind // classification of Error for UI
+
+	// LastUsage captures the most recent token usage reported by the LLM
+	// provider for a completed turn, if available.
+	LastUsage *llm.Usage
+
+	// LastStopReason records the last completion stop reason reported by
+	// the provider (e.g. "stop", "length", "toolUse", "error", "aborted").
+	LastStopReason string
+
+	// SteeringQueue holds user/steering messages to process next; consumed before FollowUpQueue.
+	// When the agent is busy, callers may enqueue here; after the current turn ends, these are processed first.
+	SteeringQueue []Message
+
+	// FollowUpQueue holds follow-up messages; consumed after SteeringQueue is empty.
+	FollowUpQueue []Message
 }

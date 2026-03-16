@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"acgo/pkg/keys"
 	"context"
 
 	"acgo/pkg/llm"
@@ -26,26 +27,26 @@ func DefaultTransformContextOptions() TransformContextOptions {
 	}
 }
 
-// AgentMessage is the application-facing message type.
-type AgentMessage struct {
-	ID         string           // unique identifier within a session
-	Role       AgentMessageRole // logical role
-	Content    string           // rendered text content (for UI)
-	Thinking   string           // reasoning/thinking stream from models that support it (e.g. DeepSeek R1, o1)
-	ToolCallID string           // when Role is RoleTool, required for OpenAI-style APIs
-	LlmMessage *llm.Message     // backing LLM message when applicable
-	IsError    bool             // whether this message represents an error
-	Metadata   map[string]any   // arbitrary metadata
+// Message is the application-facing message type.
+type Message struct {
+	ID         string                // unique identifier within a session
+	Role       keys.AgentMessageRole // logical role
+	Content    string                // rendered text content (for UI)
+	Thinking   string                // reasoning/thinking stream from models that support it (e.g. DeepSeek R1, o1)
+	ToolCallID string                // when Role is AgentRoleTool, required for OpenAI-style APIs
+	LlmMessage *llm.Message          // backing LLM message when applicable
+	IsError    bool                  // whether this message represents an error
+	Metadata   map[string]any        // arbitrary metadata
 }
 
 // defaultConvertToLlm converts AgentMessage to llm.Message by mapping roles and content.
 // When an assistant message has LlmMessage set (e.g. after a tool-call turn), that is used so tool_calls are preserved for the API.
-func defaultConvertToLlm(msgs []AgentMessage) []llm.Message {
+func defaultConvertToLlm(msgs []Message) []llm.Message {
 	out := make([]llm.Message, 0, len(msgs))
 	for _, m := range msgs {
 		switch m.Role {
-		case RoleSystem, RoleUser, RoleAssistant, RoleTool:
-			if m.Role == RoleAssistant && m.LlmMessage != nil {
+		case keys.AgentRoleSystem, keys.AgentRoleUser, keys.AgentRoleAssistant, keys.AgentRoleTool:
+			if m.Role == keys.AgentRoleAssistant && m.LlmMessage != nil {
 				out = append(out, *m.LlmMessage)
 				continue
 			}
@@ -56,10 +57,10 @@ func defaultConvertToLlm(msgs []AgentMessage) []llm.Message {
 					{Type: "text", Text: m.Content},
 				},
 			}
-			if m.Role == RoleAssistant {
+			if m.Role == keys.AgentRoleAssistant {
 				msg.Thinking = m.Thinking
 			}
-			if m.Role == RoleTool {
+			if m.Role == keys.AgentRoleTool {
 				msg.ToolCallID = m.ToolCallID
 			}
 			out = append(out, msg)
@@ -72,7 +73,7 @@ func defaultConvertToLlm(msgs []AgentMessage) []llm.Message {
 
 // estimateMessageTokens returns a rough token count for the message (content + thinking).
 // Uses ~4 characters per token as a simple approximation for mixed languages.
-func estimateMessageTokens(m AgentMessage) int {
+func estimateMessageTokens(m Message) int {
 	n := len(m.Content) + len(m.Thinking)
 	if m.LlmMessage != nil {
 		for _, b := range m.LlmMessage.Content {
@@ -85,18 +86,18 @@ func estimateMessageTokens(m AgentMessage) int {
 
 // defaultTransformContext trims the message list to fit within turn/token limits while
 // always keeping leading system messages and a minimum number of recent tool results.
-func defaultTransformContext(msgs []AgentMessage, _ context.Context) []AgentMessage {
+func defaultTransformContext(msgs []Message, _ context.Context) []Message {
 	return transformContextWithOptions(msgs, DefaultTransformContextOptions())
 }
 
 // transformContextWithOptions applies the trimming strategy defined by opts.
-func transformContextWithOptions(msgs []AgentMessage, opts TransformContextOptions) []AgentMessage {
+func transformContextWithOptions(msgs []Message, opts TransformContextOptions) []Message {
 	if len(msgs) == 0 {
 		return nil
 	}
 	// Split: leading system messages, then conversation.
 	var systemEnd int
-	for systemEnd < len(msgs) && msgs[systemEnd].Role == RoleSystem {
+	for systemEnd < len(msgs) && msgs[systemEnd].Role == keys.AgentRoleSystem {
 		systemEnd++
 	}
 	system := msgs[:systemEnd]
@@ -112,7 +113,7 @@ func transformContextWithOptions(msgs []AgentMessage, opts TransformContextOptio
 	// Keep the earlier of the two so we satisfy both: keep last N turns AND last K tool results.
 	start := min(startByTurns, startByTools)
 
-	trimmed := make([]AgentMessage, 0, len(system)+len(conv)-start)
+	trimmed := make([]Message, 0, len(system)+len(conv)-start)
 	trimmed = append(trimmed, system...)
 	trimmed = append(trimmed, conv[start:]...)
 
@@ -126,14 +127,14 @@ func transformContextWithOptions(msgs []AgentMessage, opts TransformContextOptio
 // startOfLastNTurns returns the start index in conv so that we keep the last n turns.
 // A turn = one user message plus all following messages until the next user message.
 // n <= 0 means keep all (return 0).
-func startOfLastNTurns(conv []AgentMessage, n int) int {
+func startOfLastNTurns(conv []Message, n int) int {
 	if n <= 0 {
 		return 0
 	}
 	// Count user messages from the end; the n-th user message (from end) starts a turn we must keep.
 	userCount := 0
 	for i := len(conv) - 1; i >= 0; i-- {
-		if conv[i].Role == RoleUser {
+		if conv[i].Role == keys.AgentRoleUser {
 			userCount++
 			if userCount == n {
 				return i
@@ -145,13 +146,13 @@ func startOfLastNTurns(conv []AgentMessage, n int) int {
 
 // startToKeepLastKToolResults returns the start index so that the last K tool messages are kept.
 // Returns len(conv) when k <= 0 so min(with startOfLastNTurns) is not constrained by tools.
-func startToKeepLastKToolResults(conv []AgentMessage, k int) int {
+func startToKeepLastKToolResults(conv []Message, k int) int {
 	if k <= 0 {
 		return len(conv)
 	}
 	toolCount := 0
 	for i := len(conv) - 1; i >= 0; i-- {
-		if conv[i].Role == RoleTool {
+		if conv[i].Role == keys.AgentRoleTool {
 			toolCount++
 			if toolCount == k {
 				return i
@@ -163,7 +164,7 @@ func startToKeepLastKToolResults(conv []AgentMessage, k int) int {
 
 // trimToMaxEstimatedTokens shrinks the conversation part (after system) so total estimated tokens <= max.
 // System messages are always kept. Trimming advances to the next user message so we don't cut mid-turn.
-func trimToMaxEstimatedTokens(msgs []AgentMessage, systemLen int, maxTokens int) []AgentMessage {
+func trimToMaxEstimatedTokens(msgs []Message, systemLen int, maxTokens int) []Message {
 	if systemLen >= len(msgs) || maxTokens <= 0 {
 		return msgs
 	}
@@ -187,10 +188,10 @@ func trimToMaxEstimatedTokens(msgs []AgentMessage, systemLen int, maxTokens int)
 		total -= estimateMessageTokens(conv[trim])
 		trim++
 	}
-	for trim < len(conv) && conv[trim].Role != RoleUser {
+	for trim < len(conv) && conv[trim].Role != keys.AgentRoleUser {
 		trim++
 	}
-	out := make([]AgentMessage, 0, systemLen+len(conv)-trim)
+	out := make([]Message, 0, systemLen+len(conv)-trim)
 	out = append(out, msgs[:systemLen]...)
 	out = append(out, conv[trim:]...)
 	return out

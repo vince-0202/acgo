@@ -1,26 +1,27 @@
 package agent
 
 import (
+	"acgo/pkg/keys"
 	"context"
 	"testing"
 )
 
 func TestTransformContext_KeepsSystemAndTrimsByTurns(t *testing.T) {
 	opts := TransformContextOptions{MaxTurns: 2, MinToolResultsToKeep: 0}
-	msgs := []AgentMessage{
-		{Role: RoleSystem, Content: "You are helpful."},
-		{Role: RoleUser, Content: "turn1"},
-		{Role: RoleAssistant, Content: "r1"},
-		{Role: RoleUser, Content: "turn2"},
-		{Role: RoleAssistant, Content: "r2"},
-		{Role: RoleUser, Content: "turn3"},
-		{Role: RoleAssistant, Content: "r3"},
+	msgs := []Message{
+		{Role: keys.AgentRoleSystem, Content: "You are helpful."},
+		{Role: keys.AgentRoleUser, Content: "turn1"},
+		{Role: keys.AgentRoleAssistant, Content: "r1"},
+		{Role: keys.AgentRoleUser, Content: "turn2"},
+		{Role: keys.AgentRoleAssistant, Content: "r2"},
+		{Role: keys.AgentRoleUser, Content: "turn3"},
+		{Role: keys.AgentRoleAssistant, Content: "r3"},
 	}
 	out := transformContextWithOptions(msgs, opts)
 	if len(out) != 5 {
 		t.Fatalf("got %d messages, want 5 (system + last 2 turns = 4 msgs)", len(out))
 	}
-	if out[0].Role != RoleSystem || out[0].Content != "You are helpful." {
+	if out[0].Role != keys.AgentRoleSystem || out[0].Content != "You are helpful." {
 		t.Errorf("first message: role=%s content=%q", out[0].Role, out[0].Content)
 	}
 	if out[1].Content != "turn2" || out[3].Content != "turn3" {
@@ -30,15 +31,15 @@ func TestTransformContext_KeepsSystemAndTrimsByTurns(t *testing.T) {
 
 func TestTransformContext_KeepsLastToolResults(t *testing.T) {
 	opts := TransformContextOptions{MaxTurns: 1, MinToolResultsToKeep: 2}
-	msgs := []AgentMessage{
-		{Role: RoleSystem, Content: "Sys"},
-		{Role: RoleUser, Content: "u1"},
-		{Role: RoleAssistant, Content: "a1"},
-		{Role: RoleTool, Content: "t1", ToolCallID: "c1"},
-		{Role: RoleUser, Content: "u2"},
-		{Role: RoleAssistant, Content: "a2"},
-		{Role: RoleTool, Content: "t2", ToolCallID: "c2"},
-		{Role: RoleTool, Content: "t3", ToolCallID: "c3"},
+	msgs := []Message{
+		{Role: keys.AgentRoleSystem, Content: "Sys"},
+		{Role: keys.AgentRoleUser, Content: "u1"},
+		{Role: keys.AgentRoleAssistant, Content: "a1"},
+		{Role: keys.AgentRoleTool, Content: "t1", ToolCallID: "c1"},
+		{Role: keys.AgentRoleUser, Content: "u2"},
+		{Role: keys.AgentRoleAssistant, Content: "a2"},
+		{Role: keys.AgentRoleTool, Content: "t2", ToolCallID: "c2"},
+		{Role: keys.AgentRoleTool, Content: "t3", ToolCallID: "c3"},
 	}
 	out := transformContextWithOptions(msgs, opts)
 	// Should keep system + messages that include last 2 tool results (t2, t3). So we need u2, a2, t2, t3 at least.
@@ -47,7 +48,7 @@ func TestTransformContext_KeepsLastToolResults(t *testing.T) {
 	}
 	toolContents := []string{}
 	for _, m := range out {
-		if m.Role == RoleTool {
+		if m.Role == keys.AgentRoleTool {
 			toolContents = append(toolContents, m.Content)
 		}
 	}
@@ -61,7 +62,7 @@ func TestTransformContext_EmptyAndNoConv(t *testing.T) {
 	if got := transformContextWithOptions(nil, opts); got != nil {
 		t.Errorf("nil input: got %v", got)
 	}
-	systemOnly := []AgentMessage{{Role: RoleSystem, Content: "Only"}}
+	systemOnly := []Message{{Role: keys.AgentRoleSystem, Content: "Only"}}
 	out := transformContextWithOptions(systemOnly, opts)
 	if len(out) != 1 || out[0].Content != "Only" {
 		t.Errorf("system only: got %v", out)
@@ -69,9 +70,9 @@ func TestTransformContext_EmptyAndNoConv(t *testing.T) {
 }
 
 func TestDefaultTransformContext_PassthroughWhenShort(t *testing.T) {
-	msgs := []AgentMessage{
-		{Role: RoleUser, Content: "hi"},
-		{Role: RoleAssistant, Content: "hello"},
+	msgs := []Message{
+		{Role: keys.AgentRoleUser, Content: "hi"},
+		{Role: keys.AgentRoleAssistant, Content: "hello"},
 	}
 	out := defaultTransformContext(msgs, context.Background())
 	if len(out) != 2 {
@@ -83,11 +84,11 @@ func TestDefaultTransformContext_PassthroughWhenShort(t *testing.T) {
 }
 
 func TestEstimateMessageTokens(t *testing.T) {
-	m := AgentMessage{Content: "hello world"} // 11 chars -> ~3 tokens
+	m := Message{Content: "hello world"} // 11 chars -> ~3 tokens
 	if n := estimateMessageTokens(m); n < 2 || n > 4 {
 		t.Errorf("estimateMessageTokens(hello world) = %d, want ~3", n)
 	}
-	m2 := AgentMessage{Content: "x"}
+	m2 := Message{Content: "x"}
 	if n := estimateMessageTokens(m2); n != 1 {
 		t.Errorf("estimateMessageTokens(x) = %d, want 1", n)
 	}

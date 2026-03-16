@@ -27,7 +27,6 @@ import (
 type Model struct {
 	agent             *agent.Agent
 	session           *session.Session
-	sessionPath       string
 	textarea          textarea.Model
 	history           []string
 	streamingContent  string
@@ -65,8 +64,7 @@ func newProviderBySettings(settings config.TuiAgent) []llm.Provider {
 // ModelOptions configures NewModel (session and optional initial messages).
 type ModelOptions struct {
 	Session         *session.Session
-	SessionPath     string
-	InitialMessages []agent.AgentMessage
+	InitialMessages []agent.Message
 }
 
 // NewModel constructs a minimal chat TUI model wired to the Agent.
@@ -106,7 +104,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	}
 
 	ag := agent.New("default", agent.Options{
-		InitialState: agent.AgentState{
+		InitialState: agent.State{
 			SystemPrompt: ctxResult.Prompt,
 			Model:        m,
 			Tools:        builtinTools,
@@ -131,7 +129,6 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	}
 	if opts != nil {
 		model.session = opts.Session
-		model.sessionPath = opts.SessionPath
 	}
 	return model, nil
 }
@@ -172,7 +169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if st.IsStreaming {
 					// P0.4: Agent 忙时 Enter = steering 入队
-					msg := agent.AgentMessage{Role: agent.RoleUser, Content: m.textarea.Value()}
+					msg := agent.Message{Role: keys.AgentRoleUser, Content: m.textarea.Value()}
 					m.agent.EnqueueSteering(msg)
 					m.textarea.SetValue("")
 					m.history = append(m.history, "You: (steering) "+input)
@@ -201,7 +198,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if st.IsStreaming {
 					// P0.4: Agent 忙时 Alt+Enter = follow-up 入队
-					msg := agent.AgentMessage{Role: agent.RoleUser, Content: m.textarea.Value()}
+					msg := agent.Message{Role: keys.AgentRoleUser, Content: m.textarea.Value()}
 					m.agent.EnqueueFollowUp(msg)
 					m.textarea.SetValue("")
 					m.history = append(m.history, "You: (follow-up) "+input)
@@ -233,7 +230,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingThinking += msg.ThinkingDelta
 		}
 		if msg.Delta != "" {
-			log.Debugf("stream delta len=%d", len(msg.Delta))
 			m.streamingContent += msg.Delta
 		}
 		// Schedule next read from the same channel.
@@ -251,6 +247,7 @@ var thinkingStyle = lipgloss.NewStyle().
 	Faint(true)
 
 func (m Model) View() string {
+
 	w := m.width
 	if w <= 0 {
 		w = 80
@@ -259,8 +256,6 @@ func (m Model) View() string {
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
-	historyStyle := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Height(10).Width(wrapWidth)
-	inputStyle := lipgloss.NewStyle().Border(lipgloss.NormalBorder())
 
 	body := ""
 	for _, line := range m.history {
@@ -279,14 +274,12 @@ func (m Model) View() string {
 	if body == "" {
 		body = " "
 	}
-	views := []string{}
-	// P0.5: 状态行（当前模型、streaming、错误）+ 可选 Session 路径
-	status := m.statusLine()
-	if m.sessionPath != "" {
-		status = "Session: " + m.sessionPath + " | " + status
+
+	views := []string{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.statusLine()),
+		lipgloss.NewStyle().Width(wrapWidth).Render(body),
+		lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Render(m.textarea.View()),
 	}
-	views = append(views, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(status))
-	views = append(views, historyStyle.Render(body), inputStyle.Render(m.textarea.View()))
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
 }
 
@@ -327,8 +320,8 @@ func (m *Model) runCommand(raw string) (reply string, quit bool) {
 		}
 		return strings.TrimSuffix(b.String(), "\n"), false
 	case "session":
-		if m.sessionPath != "" {
-			return "session: " + m.sessionPath, false
+		if m.session.Path != "" {
+			return "session: " + m.session.Path, false
 		}
 		return "no session", false
 	case "reset":
@@ -359,7 +352,11 @@ func (m *Model) statusLine() string {
 	if st.Error != nil {
 		parts = append(parts, agent.FormatErrorForDisplay(st.Error))
 	}
-	return strings.Join(parts, " | ")
+	status := strings.Join(parts, " | ")
+	if m.session.Path != "" {
+		status = "Session: " + m.session.Path + " | " + status
+	}
+	return status
 }
 
 // waitForStreamEvent returns a Cmd that reads one event from ch (for streaming).
@@ -381,35 +378,7 @@ func (m *Model) runAgentStream(prompt string) tea.Cmd {
 	var done atomic.Bool
 	go func() {
 		unsub := m.agent.Subscribe(func(e agent.Event) {
-			if done.Load() {
-				return
-			}
-			if m.session != nil && e.Message != nil {
-				switch e.Type {
-				case agent.EventMessageEnd:
-					_ = m.session.AppendMessage(agentMessageToSession(e.Message))
-				case agent.EventToolExecutionEnd:
-					_ = m.session.AppendMessage(agentMessageToSession(e.Message))
-				}
-			}
-			switch e.Type {
-			case agent.EventMessageUpdate:
-				if e.LlmEvent == nil {
-					return
-				}
-				if e.LlmEvent.TextDelta != "" {
-					select {
-					case ch <- streamEvent{Delta: e.LlmEvent.TextDelta, Ch: ch}:
-					default:
-					}
-				}
-				if e.LlmEvent.ThinkingDelta != "" {
-					select {
-					case ch <- streamEvent{ThinkingDelta: e.LlmEvent.ThinkingDelta, Ch: ch}:
-					default:
-					}
-				}
-			}
+			m.handleAgentEvent(e, &done, ch)
 		})
 		defer unsub()
 
@@ -430,6 +399,38 @@ func (m *Model) runAgentStream(prompt string) tea.Cmd {
 	}
 }
 
+func (m *Model) handleAgentEvent(e agent.Event, done *atomic.Bool, ch chan streamEvent) {
+	if done.Load() {
+		return
+	}
+	if m.session != nil && e.Message != nil {
+		switch e.Type {
+		case agent.EventMessageEnd:
+			_ = m.session.AppendMessage(agentMessageToSession(e.Message))
+		case agent.EventToolExecutionEnd:
+			_ = m.session.AppendMessage(agentMessageToSession(e.Message))
+		}
+	}
+	switch e.Type {
+	case agent.EventMessageUpdate:
+		if e.LlmEvent == nil {
+			return
+		}
+		if e.LlmEvent.TextDelta != "" {
+			select {
+			case ch <- streamEvent{Delta: e.LlmEvent.TextDelta, Ch: ch}:
+			default:
+			}
+		}
+		if e.LlmEvent.ThinkingDelta != "" {
+			select {
+			case ch <- streamEvent{ThinkingDelta: e.LlmEvent.ThinkingDelta, Ch: ch}:
+			default:
+			}
+		}
+	}
+}
+
 // Run launches the TUI. If sessionPath is empty, a new session file is created under config session root.
 // If sessionPath is set, that file is opened and messages are loaded into the agent.
 func Run(sessionPath string) error {
@@ -443,43 +444,49 @@ func Run(sessionPath string) error {
 		root = home + "/.acgo/sessions"
 	}
 
+	sess, initial, err := loadSessionAndMessage(sessionPath, root)
+	if err != nil {
+		return err
+	}
+
+	model, err := NewModel(&ModelOptions{Session: sess, InitialMessages: initial})
+	if err != nil {
+		return err
+	}
+
+	_, err = tea.NewProgram(model, tea.WithOutput(os.Stdout)).Run()
+	return err
+}
+
+func loadSessionAndMessage(sessionPath string, root string) (*session.Session, []agent.Message, error) {
 	var sess *session.Session
-	var path string
-	var initial []agent.AgentMessage
+	var initial []agent.Message
 
 	if sessionPath == "" {
-		path, err = session.NewSessionPath(root)
+		path, err := session.NewSessionPath(root)
 		if err != nil {
-			return fmt.Errorf("create session path: %w", err)
+			return nil, nil, fmt.Errorf("create session path: %w", err)
 		}
 		sess, err = session.Create(path)
 		if err != nil {
-			return fmt.Errorf("create session: %w", err)
+			return nil, nil, fmt.Errorf("create session: %w", err)
 		}
 	} else {
-		path = sessionPath
-		sess = session.Open(path)
+		sess = session.Open(sessionPath)
 		msgs, err := sess.LoadAll()
 		if err == nil && len(msgs) > 0 {
 			initial = sessionMessagesToAgent(msgs)
 		}
 	}
-
-	model, err := NewModel(&ModelOptions{Session: sess, SessionPath: path, InitialMessages: initial})
-	if err != nil {
-		return err
-	}
-	p := tea.NewProgram(model, tea.WithOutput(os.Stdout))
-	_, err = p.Run()
-	return err
+	return sess, initial, nil
 }
 
-func sessionMessagesToAgent(msgs []session.Message) []agent.AgentMessage {
-	out := make([]agent.AgentMessage, 0, len(msgs))
+func sessionMessagesToAgent(msgs []session.Message) []agent.Message {
+	out := make([]agent.Message, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, agent.AgentMessage{
+		out = append(out, agent.Message{
 			ID:       m.ID,
-			Role:     agent.AgentMessageRole(m.Role),
+			Role:     keys.AgentMessageRole(m.Role),
 			Content:  m.Content,
 			Metadata: m.Metadata,
 		})
@@ -487,7 +494,7 @@ func sessionMessagesToAgent(msgs []session.Message) []agent.AgentMessage {
 	return out
 }
 
-func agentMessageToSession(msg *agent.AgentMessage) session.Message {
+func agentMessageToSession(msg *agent.Message) session.Message {
 	return session.Message{
 		ID:        msg.ID,
 		Role:      string(msg.Role),

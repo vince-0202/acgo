@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"acgo/pkg/keys"
 	"context"
 	"encoding/json"
 	"testing"
@@ -75,7 +76,7 @@ func TestExecutePendingTools_NormalizesDoubleEncodedArguments(t *testing.T) {
 	}
 
 	a := New("test", Options{
-		InitialState: AgentState{
+		InitialState: State{
 			Model: llm.Model{ModelSetting: config.ModelSetting{ID: "test-model"}, Provider: "test"},
 			Tools: []AgentTool{rec},
 		},
@@ -123,7 +124,7 @@ func TestExecutePendingTools_EmptyArgumentsBecomeEmptyObject(t *testing.T) {
 	}
 
 	a := New("test", Options{
-		InitialState: AgentState{
+		InitialState: State{
 			Model: llm.Model{ModelSetting: config.ModelSetting{ID: "test-model"}, Provider: "test"},
 			Tools: []AgentTool{rec},
 		},
@@ -153,14 +154,14 @@ func TestPrompt_DrainsSteeringThenFollowUpQueues(t *testing.T) {
 		return ch, nil
 	}
 	a := New("test", Options{
-		InitialState: AgentState{
+		InitialState: State{
 			Model: llm.Model{ModelSetting: config.ModelSetting{ID: "test-model"}, Provider: "test"},
 			Tools: nil,
 		},
 		StreamFn: mockStream,
 	})
-	a.EnqueueFollowUp(AgentMessage{ID: "follow-1", Role: RoleUser, Content: "follow-up"})
-	a.EnqueueSteering(AgentMessage{ID: "steer-1", Role: RoleUser, Content: "steering"})
+	a.EnqueueFollowUp(Message{ID: "follow-1", Role: keys.AgentRoleUser, Content: "follow-up"})
+	a.EnqueueSteering(Message{ID: "steer-1", Role: keys.AgentRoleUser, Content: "steering"})
 	ctx := context.Background()
 	if err := a.Prompt(ctx, "first"); err != nil {
 		t.Fatalf("Prompt: %v", err)
@@ -169,7 +170,7 @@ func TestPrompt_DrainsSteeringThenFollowUpQueues(t *testing.T) {
 	// Order: first (initial), then steering (consumed first), then follow-up.
 	var userContents []string
 	for _, m := range state.Messages {
-		if m.Role == RoleUser {
+		if m.Role == keys.AgentRoleUser {
 			userContents = append(userContents, m.Content)
 		}
 	}
@@ -189,12 +190,12 @@ func TestPrompt_DrainsSteeringThenFollowUpQueues(t *testing.T) {
 }
 
 func TestReplaceMessages(t *testing.T) {
-	a := New("test", Options{InitialState: AgentState{}})
-	a.AppendMessage(AgentMessage{Role: RoleUser, Content: "a"})
-	a.AppendMessage(AgentMessage{Role: RoleAssistant, Content: "b"})
-	replacement := []AgentMessage{
-		{Role: RoleUser, Content: "x"},
-		{Role: RoleAssistant, Content: "y"},
+	a := New("test", Options{InitialState: State{}})
+	a.AppendMessage(Message{Role: keys.AgentRoleUser, Content: "a"})
+	a.AppendMessage(Message{Role: keys.AgentRoleAssistant, Content: "b"})
+	replacement := []Message{
+		{Role: keys.AgentRoleUser, Content: "x"},
+		{Role: keys.AgentRoleAssistant, Content: "y"},
 	}
 	a.ReplaceMessages(replacement)
 	state := a.State()
@@ -213,7 +214,7 @@ func TestReplaceMessages(t *testing.T) {
 }
 
 func TestSetErrorAndClearError(t *testing.T) {
-	a := New("test", Options{InitialState: AgentState{}})
+	a := New("test", Options{InitialState: State{}})
 	if a.State().Error != nil {
 		t.Fatal("initial error should be nil")
 	}
@@ -229,7 +230,7 @@ func TestSetErrorAndClearError(t *testing.T) {
 }
 
 func TestWaitForIdle(t *testing.T) {
-	a := New("test", Options{InitialState: AgentState{}})
+	a := New("test", Options{InitialState: State{}})
 	ctx := context.Background()
 	if err := a.WaitForIdle(ctx); err != nil {
 		t.Errorf("WaitForIdle when idle: %v", err)
