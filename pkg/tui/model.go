@@ -28,6 +28,8 @@ import (
 type Model struct {
 	agent             *agent.Agent
 	session           *session.Session
+	sessionRoot       string
+	sessionName       string
 	textarea          textarea.Model
 	history           []string
 	streamingContent  string
@@ -36,6 +38,14 @@ type Model struct {
 	width             int
 	height            int
 	err               error
+
+	// command registry (P1.2): maps name/alias -> handler
+	commands     map[string]commandSpec
+	commandSpecs []commandSpec // stable list for /help
+
+	// context files (P1.3)
+	workDir      string
+	contextPaths []string
 }
 
 // streamEvent is sent from the agent goroutine for each delta or done/error.
@@ -45,6 +55,16 @@ type streamEvent struct {
 	Done          bool
 	Err           error
 	Ch            chan streamEvent
+}
+
+type commandHandler func(m *Model, arg string) (reply string, quit bool)
+
+type commandSpec struct {
+	Name    string
+	Aliases []string
+	Usage   string
+	Help    string
+	Handle  commandHandler
 }
 
 func newProviderBySettings(settings config.AgentSetting) []llm.Provider {
@@ -68,6 +88,7 @@ func newProviderBySettings(settings config.AgentSetting) []llm.Provider {
 type ModelOptions struct {
 	Session         *session.Session
 	InitialMessages []agent.Message
+	SessionName     string
 }
 
 // NewModel constructs a minimal chat TUI model wired to the Agent.
@@ -124,15 +145,29 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	ta.Focus()
 
 	model := &Model{
-		agent:    ag,
-		textarea: ta,
-		history:  nil,
-		width:    80,
-		height:   24,
+		agent:        ag,
+		textarea:     ta,
+		history:      nil,
+		width:        80,
+		height:       24,
+		commands:     map[string]commandSpec{},
+		commandSpecs: nil,
+		workDir:      workDir,
+		contextPaths: append([]string(nil), ctxResult.Paths...),
 	}
 	if opts != nil {
 		model.session = opts.Session
+		model.sessionName = strings.TrimSpace(opts.SessionName)
 	}
+	// sessionRoot is used by /new even when a session is already open.
+	root := settings.Session.Root
+	if root == "" {
+		home, _ := os.UserHomeDir()
+		root = home + "/.acgo/sessions"
+	}
+	model.sessionRoot = root
+
+	model.registerBuiltinCommands()
 	return model, nil
 }
 
@@ -278,68 +313,93 @@ func (m Model) View() string {
 		body = " "
 	}
 
-	views := []string{
-		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.statusLine()),
-		lipgloss.NewStyle().Width(wrapWidth).Render(body),
-		lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Render(m.textarea.View()),
+	// When typing a slash command, show a palette under the input.
+	var commandView string
+	if v := strings.TrimSpace(m.textarea.Value()); strings.HasPrefix(v, "/") {
+		commandView = m.commandPaletteView()
 	}
+
+	views := []string{
+		lipgloss.NewStyle().Width(wrapWidth).Render(body),
+		lipgloss.NewStyle().Border(lipgloss.DoubleBorder(), true, false, true, false).Render(m.textarea.View()),
+	}
+	if commandView != "" {
+		views = append(views, commandView)
+	}
+	views = append(views,
+		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.statusLine()),
+	)
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
 }
 
-// runCommand parses "/command [args]" and returns (reply string, quit bool).
-// Used for /model, /session, /reset, /settings, /quit.
-func (m *Model) runCommand(raw string) (reply string, quit bool) {
-	raw = strings.TrimSpace(raw)
+// commandPaletteView renders a filtered list of slash commands under the input.
+// It uses substring match on name, aliases, and usage.
+func (m Model) commandPaletteView() string {
+	raw := strings.TrimSpace(m.textarea.Value())
 	if !strings.HasPrefix(raw, "/") {
+		return ""
+	}
+	// query is content after first "/"
+	query := strings.TrimSpace(strings.TrimPrefix(raw, "/"))
+	queryLower := strings.ToLower(query)
+
+	type item struct {
+		usage string
+		help  string
+		name  string
+	}
+	var items []item
+	for _, spec := range m.commandSpecs {
+		usage := spec.Usage
+		if strings.TrimSpace(usage) == "" {
+			usage = "/" + spec.Name
+		}
+		text := strings.ToLower(spec.Name + " " + strings.Join(spec.Aliases, " ") + " " + usage)
+		if queryLower != "" && !strings.Contains(text, queryLower) {
+			continue
+		}
+		items = append(items, item{
+			usage: usage,
+			help:  strings.TrimSpace(spec.Help),
+			name:  spec.Name,
+		})
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	// Limit number of rows so palette不会盖满屏幕
+	maxRows := 10
+	if len(items) > maxRows {
+		items = items[:maxRows]
+	}
+
+	var b strings.Builder
+	for _, it := range items {
+		line := it.usage
+		if it.help != "" {
+			line += " - " + it.help
+		}
+		b.WriteString(line + "\n")
+	}
+	content := strings.TrimSuffix(b.String(), "\n")
+	if content == "" {
+		return ""
+	}
+	// Palette style: 单独边框 + 略微变暗的前景色
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	return style.Render(content)
+}
+
+func (m *Model) runCommand(raw string) (reply string, quit bool) {
+	cmd, arg, ok := parseSlashCommand(raw)
+	if !ok {
 		return "not a command", false
 	}
-	parts := strings.Fields(raw)
-	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
-	var arg string
-	if len(parts) > 1 {
-		arg = strings.Join(parts[1:], " ")
+	spec, ok := m.commands[cmd]
+	if !ok || spec.Handle == nil {
+		return "unknown command: /" + cmd + " (try /help)", false
 	}
-	switch cmd {
-	case "quit", "q":
-		return "", true
-	case "model":
-		if arg != "" {
-			if mod, ok := llm.GetModel(strings.TrimSpace(arg)); ok {
-				m.agent.SetModel(mod)
-				return "model: " + mod.Provider + "/" + mod.ID, false
-			}
-			return "unknown model: " + arg, false
-		}
-		models := llm.ListModels()
-		var b strings.Builder
-		cur := m.agent.State().Model
-		b.WriteString("current: " + cur.Provider + "/" + cur.ID + "\n")
-		for _, mod := range models {
-			b.WriteString("  " + mod.Provider + "/" + mod.ID)
-			if mod.ID == cur.ID && mod.Provider == cur.Provider {
-				b.WriteString(" (current)")
-			}
-			b.WriteString("\n")
-		}
-		return strings.TrimSuffix(b.String(), "\n"), false
-	case "session":
-		if m.session.Path != "" {
-			return "session: " + m.session.Path, false
-		}
-		return "no session", false
-	case "reset":
-		m.agent.Reset()
-		m.err = nil
-		m.history = nil
-		m.streamingContent = ""
-		m.streamingThinking = ""
-		return "reset done", false
-	case "settings":
-		home, _ := os.UserHomeDir()
-		return "config: " + home + "/.acgo/settings.yaml", false
-	default:
-		return "unknown command: /" + cmd + " (try /model, /session, /reset, /settings, /quit)", false
-	}
+	return spec.Handle(m, arg)
 }
 
 // statusLine returns a one-line status: model, streaming, last error (P0.5).
@@ -356,10 +416,272 @@ func (m *Model) statusLine() string {
 		parts = append(parts, agent.FormatErrorForDisplay(st.Error))
 	}
 	status := strings.Join(parts, " | ")
-	if m.session.Path != "" {
+	if m.session != nil && m.session.Path != "" {
 		status = "Session: " + m.session.Path + " | " + status
 	}
+	if strings.TrimSpace(m.sessionName) != "" {
+		status = "Name: " + strings.TrimSpace(m.sessionName) + " | " + status
+	}
 	return status
+}
+
+func parseSlashCommand(raw string) (cmd string, arg string, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "/") {
+		return "", "", false
+	}
+	parts := strings.Fields(raw)
+	if len(parts) == 0 {
+		return "", "", false
+	}
+	cmd = strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+	if cmd == "" {
+		return "", "", false
+	}
+	if len(parts) > 1 {
+		arg = strings.Join(parts[1:], " ")
+	}
+	return cmd, arg, true
+}
+
+func (m *Model) registerCommand(spec commandSpec) {
+	name := strings.ToLower(strings.TrimSpace(spec.Name))
+	if name == "" || spec.Handle == nil {
+		return
+	}
+	spec.Name = name
+	m.commandSpecs = append(m.commandSpecs, spec)
+	m.commands[name] = spec
+	for _, a := range spec.Aliases {
+		alias := strings.ToLower(strings.TrimSpace(a))
+		if alias == "" {
+			continue
+		}
+		m.commands[alias] = spec
+	}
+}
+
+func (m *Model) registerBuiltinCommands() {
+	m.registerCommand(commandSpec{
+		Name:    "help",
+		Aliases: []string{"h", "?"},
+		Usage:   "/help",
+		Help:    "Show available commands.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			var b strings.Builder
+			b.WriteString("commands:\n")
+			for _, s := range m.commandSpecs {
+				usage := s.Usage
+				if strings.TrimSpace(usage) == "" {
+					usage = "/" + s.Name
+				}
+				b.WriteString("  " + usage)
+				if strings.TrimSpace(s.Help) != "" {
+					b.WriteString(" - " + strings.TrimSpace(s.Help))
+				}
+				b.WriteString("\n")
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:    "quit",
+		Aliases: []string{"q"},
+		Usage:   "/quit",
+		Help:    "Quit the TUI.",
+		Handle:  func(_ *Model, _ string) (string, bool) { return "", true },
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "model",
+		Usage: "/model [provider/model_id]",
+		Help:  "List models or switch current model.",
+		Handle: func(m *Model, arg string) (string, bool) {
+			arg = strings.TrimSpace(arg)
+			if arg != "" {
+				if mod, ok := llm.GetModel(arg); ok {
+					m.agent.SetModel(mod)
+					return "model: " + mod.Provider + "/" + mod.ID, false
+				}
+				return "unknown model: " + arg, false
+			}
+			models := llm.ListModels()
+			var b strings.Builder
+			cur := m.agent.State().Model
+			b.WriteString("current: " + cur.Provider + "/" + cur.ID + "\n")
+			for _, mod := range models {
+				b.WriteString("  " + mod.Provider + "/" + mod.ID)
+				if mod.ID == cur.ID && mod.Provider == cur.Provider {
+					b.WriteString(" (current)")
+				}
+				b.WriteString("\n")
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "session",
+		Usage: "/session",
+		Help:  "Show current session file path.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			if m.session != nil && m.session.Path != "" {
+				return "session: " + m.session.Path, false
+			}
+			return "no session", false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "new",
+		Usage: "/new",
+		Help:  "Start a new session (new file + reset chat).",
+		Handle: func(m *Model, _ string) (string, bool) {
+			path, err := session.NewSessionPath(m.sessionRoot)
+			if err != nil {
+				return "create session path: " + err.Error(), false
+			}
+			sess, err := session.Create(path)
+			if err != nil {
+				return "create session: " + err.Error(), false
+			}
+			m.session = sess
+			m.sessionName = ""
+			m.agent.Reset()
+			m.err = nil
+			m.history = nil
+			m.streamingContent = ""
+			m.streamingThinking = ""
+			return "new session: " + path, false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "name",
+		Usage: "/name <title>",
+		Help:  "Set a human-readable session name (stored in session file).",
+		Handle: func(m *Model, arg string) (string, bool) {
+			title := strings.TrimSpace(arg)
+			if title == "" {
+				return "usage: /name <title>", false
+			}
+			m.sessionName = title
+			if m.session != nil && m.session.Path != "" {
+				_ = m.session.AppendMessage(session.Message{
+					ID:        "name-" + time.Now().UTC().Format(time.RFC3339Nano),
+					Role:      string(keys.AgentRoleNotification),
+					Content:   "session name: " + title,
+					CreatedAt: time.Now().UTC(),
+					Metadata: map[string]any{
+						"type": "session_name",
+						"name": title,
+					},
+				})
+			}
+			return "name: " + title, false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "tree",
+		Usage: "/tree",
+		Help:  "Show a lightweight conversation outline.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			msgs := m.agent.State().Messages
+			if len(msgs) == 0 {
+				return "(empty)", false
+			}
+			// Keep it short for the TUI: last 40 messages.
+			start := 0
+			if len(msgs) > 40 {
+				start = len(msgs) - 40
+			}
+			var b strings.Builder
+			b.WriteString("messages (latest last):\n")
+			for i := start; i < len(msgs); i++ {
+				role := string(msgs[i].Role)
+				line := fmt.Sprintf("  %d. %s", i+1, role)
+				if msgs[i].ID != "" {
+					line += " " + msgs[i].ID
+				}
+				content := strings.TrimSpace(msgs[i].Content)
+				if content != "" {
+					if len(content) > 60 {
+						content = content[:60] + "…"
+					}
+					line += " - " + content
+				}
+				b.WriteString(line + "\n")
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "reset",
+		Usage: "/reset",
+		Help:  "Reset chat (clear messages and UI state).",
+		Handle: func(m *Model, _ string) (string, bool) {
+			m.agent.Reset()
+			m.err = nil
+			m.history = nil
+			m.streamingContent = ""
+			m.streamingThinking = ""
+			return "reset done", false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "settings",
+		Usage: "/settings",
+		Help:  "Show settings file location.",
+		Handle: func(_ *Model, _ string) (string, bool) {
+			home, _ := os.UserHomeDir()
+			return "config: " + home + "/.acgo/settings.yaml", false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "system",
+		Usage: "/system",
+		Help:  "Show current system prompt summary and loaded context files.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			p := strings.TrimSpace(m.agent.State().SystemPrompt)
+			if p == "" {
+				return "(system prompt empty)", false
+			}
+			summary := p
+			if len(summary) > 400 {
+				summary = summary[:400] + "…"
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("system prompt: %d chars\n", len(p)))
+			b.WriteString(summary + "\n")
+			if len(m.contextPaths) > 0 {
+				b.WriteString("\nloaded context files:\n")
+				for _, cp := range m.contextPaths {
+					b.WriteString("  " + cp + "\n")
+				}
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "reload",
+		Usage: "/reload",
+		Help:  "Reload context files and refresh system prompt.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			if strings.TrimSpace(m.workDir) == "" {
+				return "workdir unknown; cannot reload", false
+			}
+			ctxResult := contextfile.Load(m.workDir)
+			m.contextPaths = append([]string(nil), ctxResult.Paths...)
+			m.agent.SetSystemPrompt(ctxResult.Prompt)
+			return fmt.Sprintf("reloaded: %d file(s), system prompt %d chars", len(ctxResult.Paths), len(strings.TrimSpace(ctxResult.Prompt))), false
+		},
+	})
 }
 
 // waitForStreamEvent returns a Cmd that reads one event from ch (for streaming).
@@ -447,12 +769,12 @@ func Run(sessionPath string) error {
 		root = home + "/.acgo/sessions"
 	}
 
-	sess, initial, err := loadSessionAndMessage(sessionPath, root)
+	sess, initial, sessName, err := loadSessionAndMessage(sessionPath, root)
 	if err != nil {
 		return err
 	}
 
-	model, err := NewModel(&ModelOptions{Session: sess, InitialMessages: initial})
+	model, err := NewModel(&ModelOptions{Session: sess, InitialMessages: initial, SessionName: sessName})
 	if err != nil {
 		return err
 	}
@@ -461,27 +783,44 @@ func Run(sessionPath string) error {
 	return err
 }
 
-func loadSessionAndMessage(sessionPath string, root string) (*session.Session, []agent.Message, error) {
+func loadSessionAndMessage(sessionPath string, root string) (*session.Session, []agent.Message, string, error) {
 	var sess *session.Session
 	var initial []agent.Message
+	var sessName string
 
 	if sessionPath == "" {
 		path, err := session.NewSessionPath(root)
 		if err != nil {
-			return nil, nil, fmt.Errorf("create session path: %w", err)
+			return nil, nil, "", fmt.Errorf("create session path: %w", err)
 		}
 		sess, err = session.Create(path)
 		if err != nil {
-			return nil, nil, fmt.Errorf("create session: %w", err)
+			return nil, nil, "", fmt.Errorf("create session: %w", err)
 		}
 	} else {
 		sess = session.Open(sessionPath)
 		msgs, err := sess.LoadAll()
 		if err == nil && len(msgs) > 0 {
+			sessName = extractSessionName(msgs)
 			initial = sessionMessagesToAgent(msgs)
 		}
 	}
-	return sess, initial, nil
+	return sess, initial, sessName, nil
+}
+
+func extractSessionName(msgs []session.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Metadata == nil {
+			continue
+		}
+		if t, _ := msgs[i].Metadata["type"].(string); t != "session_name" {
+			continue
+		}
+		if n, _ := msgs[i].Metadata["name"].(string); strings.TrimSpace(n) != "" {
+			return strings.TrimSpace(n)
+		}
+	}
+	return ""
 }
 
 func sessionMessagesToAgent(msgs []session.Message) []agent.Message {

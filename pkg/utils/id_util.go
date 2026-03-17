@@ -48,7 +48,9 @@ func GeneratorFor(kind keys.IdKind) IdGenerator {
 	case keys.IdKindSnowflake:
 		return snowflakeGen
 	default:
-		return snowflakeGen
+		// Unknown kinds should be conservative and human-friendly.
+		// UUIDs are widely accepted as opaque IDs across APIs and storage.
+		return uuidGen
 	}
 }
 
