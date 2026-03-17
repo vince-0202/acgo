@@ -1,13 +1,13 @@
 package tools
 
 import (
+	"acgo/pkg/rag"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"acgo/pkg/agent"
-	"acgo/pkg/rag"
 )
 
 // ragTool exposes semantic search over the indexed document chunks.
@@ -78,10 +78,9 @@ func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawM
 	return agent.ToolResult{Content: strings.TrimSpace(b.String())}, nil
 }
 
-// NewRagTool creates a new RAG search AgentTool using the given Retriever.
-func NewRagTool(r rag.Retriever) agent.AgentTool {
-	if r == nil {
-		return nil
+// NewRagTool creates a new RAG search AgentTool.
+func NewRagTool() agent.AgentTool {
+	return &ragTool{
+		retriever: rag.GetRetriever(),
 	}
-	return &ragTool{retriever: r}
 }

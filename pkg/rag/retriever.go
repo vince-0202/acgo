@@ -1,6 +1,9 @@
 package rag
 
 import (
+	"acgo/pkg/rag/embedder"
+	"acgo/pkg/rag/ingest"
+	"acgo/pkg/rag/vector"
 	"context"
 	"time"
 
@@ -10,18 +13,18 @@ import (
 // SimpleRetriever is a basic implementation of Retriever.
 // It delegates to an Embedder and VectorStore and converts hits into DocumentChunk values.
 type SimpleRetriever struct {
-	Embedder    Embedder
-	VectorStore VectorStore
+	Embedder    *embedder.Wrapper
+	VectorStore vector.Store
 }
 
-func NewSimpleRetriever(embedder Embedder, store VectorStore) *SimpleRetriever {
+func NewSimpleRetriever(embedder *embedder.Wrapper, store vector.Store) *SimpleRetriever {
 	return &SimpleRetriever{
 		Embedder:    embedder,
 		VectorStore: store,
 	}
 }
 
-func (r *SimpleRetriever) Retrieve(ctx context.Context, query string, topK int, filters map[string]any) ([]DocumentChunk, error) {
+func (r *SimpleRetriever) Retrieve(ctx context.Context, query string, topK int, filters map[string]any) ([]ingest.DocumentChunk, error) {
 	if r == nil || r.Embedder == nil || r.VectorStore == nil {
 		return nil, nil
 	}
@@ -40,9 +43,9 @@ func (r *SimpleRetriever) Retrieve(ctx context.Context, query string, topK int, 
 		return nil, err
 	}
 	log.Debugf("[rag] Retriever.Retrieve: search done hits=%d elapsed=%v", len(results), time.Since(searchStart))
-	chunks := make([]DocumentChunk, 0, len(results))
+	chunks := make([]ingest.DocumentChunk, 0, len(results))
 	for _, res := range results {
-		chunks = append(chunks, DocumentChunk{
+		chunks = append(chunks, ingest.DocumentChunk{
 			ID:       res.Record.ID,
 			Text:     res.Record.Text,
 			Score:    res.Score,

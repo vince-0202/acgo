@@ -1,4 +1,4 @@
-package rag
+package vector
 
 import (
 	"context"
@@ -13,16 +13,16 @@ import (
 // It is intended for testing and local experimentation, not for production use.
 type InMemoryVectorStore struct {
 	mu    sync.RWMutex
-	items map[string]VectorRecord
+	items map[string]Record
 }
 
 func NewInMemoryVectorStore() *InMemoryVectorStore {
 	return &InMemoryVectorStore{
-		items: make(map[string]VectorRecord),
+		items: make(map[string]Record),
 	}
 }
 
-func (s *InMemoryVectorStore) Upsert(_ context.Context, records []VectorRecord) error {
+func (s *InMemoryVectorStore) Upsert(_ context.Context, records []Record) error {
 	if len(records) == 0 {
 		return nil
 	}

@@ -1,15 +1,19 @@
-package rag
+package ingest
 
 import (
+	"acgo/pkg/rag/embedder"
+	"acgo/pkg/rag/vector"
 	"context"
 	"strings"
 )
 
 // BuildPipelineFromArgs is a small helper for CLI commands.
 // It parses comma-separated directory and extension lists and returns a ready-to-run Pipeline
-// with a provided Embedder and VectorStore.
-func BuildPipelineFromArgs(dirsArg, extsArg string, embedder Embedder, store VectorStore) *Pipeline {
-	if embedder == nil || store == nil {
+// with a provided Embedder. The VectorStore is resolved via rag.GetVectorStore().
+func BuildPipelineFromArgs(dirsArg, extsArg string, embedder *embedder.Wrapper) *Pipeline {
+
+	store := vector.GetVectorStore()
+	if store == nil {
 		return nil
 	}
 	var dataDirs []string

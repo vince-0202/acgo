@@ -17,8 +17,6 @@ import (
 	"acgo/pkg/llm/openai"
 	"acgo/pkg/llm/qwen"
 	"acgo/pkg/log"
-	"acgo/pkg/rag"
-	"a
 	"acgo/pkg/session"
 	"acgo/pkg/tools"
 
@@ -99,11 +97,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		tools.NewEditTool(),
 		tools.NewGrepTool(),
 		tools.NewListTool(),
-	}
-
-	// Optionally wire RAG search tool if rag is configured.
-	if rt := newRagToolFromSettings(settings); rt != nil {
-		builtinTools = append(builtinTools, rt)
+		tools.NewRagTool(),
 	}
 
 	workDir, _ := os.Getwd()
@@ -140,56 +134,6 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		model.session = opts.Session
 	}
 	return model, nil
-}
-
-// newRagToolFromSettings builds a Retriever + ragTool based on global settings.
-// It mirrors the RAG configuration used by the CLI rag index command.
-func newRagToolFromSettings(settings *config.Settings) agent.AgentTool {
-	// Require at least one provider.
-	if len(settings.Agent.Providers) == 0 || settings.Agent.Providers[0] == nil {
-		return nil
-	}
-
-	// Resolve embedding provider.
-	embProvider := settings.Agent.DefaultEmbeddingProvider
-	if embProvider == "" {
-		embProvider = settings.Agent.DefaultProvider
-	}
-	provider := config.FindProviderSetting(settings.Agent.Providers, embProvider)
-	if provider == nil {
-		provider = settings.Agent.Providers[0]
-	}
-
-	// Resolve embedding model.
-	embedModel := settings.Agent.DefaultEmbeddingModel
-	if embedModel == "" {
-		embedModel = keys.GetDefaultEmbeddingModel(provider.Provider)
-		if embedModel == "" {
-			embedModel = settings.Agent.DefaultModel
-		}
-	}
-
-	// Build embedder.
-	embClient := openai.NewEmbeddingClient(provider.BaseURL, provider.ApiKey, embedModel, nil)
-	embedder := rag.NewOpenAIEmbedder(embClient)
-
-	// Choose vector store implementation.
-	var store rag.VectorStore
-	switch settings.Rag.VectorStoreType {
-	case keys.VectorStoreTypeQdrant:
-		s, err := rag.NewVectorStoreQdrantFromConfig(settings.Rag.Qdrant)
-		if err != nil {
-			log.Debugf("[tui] newRagToolFromSettings: init qdrant store err=%v", err)
-			return nil
-		}
-		store = s
-	default:
-		store = rag.NewInMemoryVectorStore()
-	}
-
-	// Build retriever and tool.
-	retriever := rag.NewSimpleRetriever(embedder, store)
-	return tools.NewRagTool(retriever)
 }
 
 func (m Model) Init() tea.Cmd {

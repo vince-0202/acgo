@@ -3,12 +3,9 @@ package main
 import (
 	"fmt"
 
-	"acgo/pkg/config"
-	"acgo/pkg/keys"
-	"acgo/pkg/llm/openai"
 	"acgo/pkg/log"
-	"acgo/pkg/rag"
-
+	"acgo/pkg/rag/embedder"
+	"acgo/pkg/rag/ingest"
 	"github.com/spf13/cobra"
 )
 
@@ -33,63 +30,18 @@ var ragIndexCmd = &cobra.Command{
 		}
 		log.Debugf("[rag] index: dirs=%s exts=%s", dirs, exts)
 
-		settings, err := config.LoadSettings()
-		if err != nil {
-			return err
-		}
-		if len(settings.Agent.Providers) == 0 || settings.Agent.Providers[0] == nil {
-			return fmt.Errorf("no providers configured in settings")
+		emb := embedder.GetEmbedder()
+		if emb == nil {
+			return fmt.Errorf("no embedding provider configured (check settings)")
 		}
 
-		// 从 default_embedding_provider 和 default_embedding_model 获取 embedding 配置
-		embProvider := settings.Agent.DefaultEmbeddingProvider
-		if embProvider == "" {
-			embProvider = settings.Agent.DefaultProvider
-		}
-		provider := config.FindProviderSetting(settings.Agent.Providers, embProvider)
-		if provider == nil {
-			provider = settings.Agent.Providers[0]
-		}
-
-		embedModel := settings.Agent.DefaultEmbeddingModel
-		if embedModel == "" {
-			embedModel = keys.GetDefaultEmbeddingModel(provider.Provider)
-			if embedModel == "" {
-				embedModel = settings.Agent.DefaultModel
-			}
-		}
-
-		embClient := openai.NewEmbeddingClient(provider.BaseURL, provider.ApiKey, embedModel, nil)
-		embedder := rag.NewOpenAIEmbedder(embClient)
-
-		// Choose vector store implementation based on RagSetting.VectorStoreType.
-		var store rag.VectorStore
-		log.Debugf("[rag] index: vector_store_type=%s", settings.Rag.VectorStoreType)
-		switch settings.Rag.VectorStoreType {
-		case keys.VectorStoreTypeQdrant:
-			s, err := rag.NewVectorStoreQdrantFromConfig(settings.Rag.Qdrant)
-			if err != nil {
-				return fmt.Errorf("init qdrant vector store: %w", err)
-			}
-			store = s
-			log.Debugf("[rag] index: using Qdrant host=%s port=%d collection=%s",
-				settings.Rag.Qdrant.Host, settings.Rag.Qdrant.Port, settings.Rag.Qdrant.Collection)
-			fmt.Printf("Using Qdrant vector store: host=%s port=%d collection=%s\n",
-				settings.Rag.Qdrant.Host, settings.Rag.Qdrant.Port, settings.Rag.Qdrant.Collection)
-		case "", keys.VectorStoreTypeMemory:
-			fallthrough
-		default:
-			store = rag.NewInMemoryVectorStore()
-			log.Debugf("[rag] index: using in-memory vector store")
-			fmt.Println("Using in-memory vector store (rag.vector_store_type=memory or empty).")
-		}
-
-		p := rag.BuildPipelineFromArgs(dirs, exts, embedder, store)
+		// Build ingest pipeline using the globally configured VectorStore.
+		p := ingest.BuildPipelineFromArgs(dirs, exts, emb)
 		if p == nil {
-			return fmt.Errorf("no valid directories provided for indexing")
+			return fmt.Errorf("failed to build ingest pipeline (check rag vector store and dirs config)")
 		}
 		fmt.Printf("Indexing documents from %s ...\n", dirs)
-		if err := rag.RunPipeline(p); err != nil {
+		if err := ingest.RunPipeline(p); err != nil {
 			log.Debugf("[rag] index: RunPipeline err=%v", err)
 			return err
 		}

@@ -1,6 +1,8 @@
-package rag
+package ingest
 
 import (
+	"acgo/pkg/rag/embedder"
+	"acgo/pkg/rag/vector"
 	"bufio"
 	"context"
 	"os"
@@ -144,11 +146,11 @@ type Pipeline struct {
 	cfg      IngestConfig
 	loader   *DocumentLoader
 	splitter *Splitter
-	embedder Embedder
-	store    VectorStore
+	embedder *embedder.Wrapper
+	store    vector.Store
 }
 
-func NewPipeline(cfg IngestConfig, embedder Embedder, store VectorStore) *Pipeline {
+func NewPipeline(cfg IngestConfig, embedder *embedder.Wrapper, store vector.Store) *Pipeline {
 	return &Pipeline{
 		cfg:      cfg,
 		loader:   NewDocumentLoader(cfg),
@@ -171,7 +173,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 	log.Debugf("[rag] Pipeline.Run: loaded %d files in %v", len(paths), time.Since(start))
 
-	jobs := make(chan ingestJob, p.cfg.BatchSize*p.cfg.MaxConcurrency)
+	jobs := make(chan IngestJob, p.cfg.BatchSize*p.cfg.MaxConcurrency)
 	var wg sync.WaitGroup
 	var totalChunks int64
 	var batchCount atomic.Int64
@@ -181,7 +183,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			batch := make([]ingestJob, 0, p.cfg.BatchSize)
+			batch := make([]IngestJob, 0, p.cfg.BatchSize)
 			for j := range jobs {
 				batch = append(batch, j)
 				if len(batch) >= p.cfg.BatchSize {
@@ -230,10 +232,10 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		log.Debugf("[rag] Pipeline.Run: file=%s chunks=%d runes=%d", path, len(chunks), len([]rune(content)))
 		for idx, c := range chunks {
 			uid := uuid.New().String()
-			j := ingestJob{
-				id:   uid,
-				text: c,
-				metadata: map[string]any{
+			j := IngestJob{
+				ID:   uid,
+				Text: c,
+				Metadata: map[string]any{
 					"file_path":    path,
 					"chunk_index":  idx,
 					"chunk_doc_id": path + "#" + strconv.Itoa(idx),
@@ -249,14 +251,14 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	return nil
 }
 
-func (p *Pipeline) processBatch(ctx context.Context, batch []ingestJob) error {
+func (p *Pipeline) processBatch(ctx context.Context, batch []IngestJob) error {
 	if len(batch) == 0 {
 		return nil
 	}
 	embedStart := time.Now()
 	texts := make([]string, 0, len(batch))
 	for _, j := range batch {
-		texts = append(texts, j.text)
+		texts = append(texts, j.Text)
 	}
 	vectors, err := p.embedder.EmbedDocuments(ctx, texts)
 	if err != nil {
@@ -270,13 +272,13 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []ingestJob) error {
 	log.Debugf("[rag] Pipeline.processBatch EmbedDocuments batch_len=%d dim=%d elapsed=%v",
 		len(batch), len(vectors[0]), time.Since(embedStart))
 
-	records := make([]VectorRecord, 0, len(batch))
+	records := make([]vector.Record, 0, len(batch))
 	for i, j := range batch {
-		records = append(records, VectorRecord{
-			ID:       j.id,
+		records = append(records, vector.Record{
+			ID:       j.ID,
 			Vector:   vectors[i],
-			Text:     j.text,
-			Metadata: j.metadata,
+			Text:     j.Text,
+			Metadata: j.Metadata,
 		})
 	}
 	upsertStart := time.Now()
