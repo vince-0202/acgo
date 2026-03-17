@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"acgo/pkg/keys"
-	"acgo/pkg/llm/deepseek"
 	"context"
 	"fmt"
 	"os"
@@ -13,9 +11,14 @@ import (
 	"acgo/pkg/agent"
 	"acgo/pkg/config"
 	"acgo/pkg/contextfile"
+	"acgo/pkg/keys"
 	"acgo/pkg/llm"
+	"acgo/pkg/llm/deepseek"
 	"acgo/pkg/llm/openai"
+	"acgo/pkg/llm/qwen"
 	"acgo/pkg/log"
+	"acgo/pkg/rag"
+	"a
 	"acgo/pkg/session"
 	"acgo/pkg/tools"
 
@@ -46,7 +49,7 @@ type streamEvent struct {
 	Ch            chan streamEvent
 }
 
-func newProviderBySettings(settings config.TuiAgent) []llm.Provider {
+func newProviderBySettings(settings config.AgentSetting) []llm.Provider {
 	var providers []llm.Provider
 	for _, providerSetting := range settings.Providers {
 		switch providerSetting.Provider {
@@ -54,6 +57,8 @@ func newProviderBySettings(settings config.TuiAgent) []llm.Provider {
 			providers = append(providers, openai.NewClient(providerSetting))
 		case keys.ProviderTypeDeepSeek:
 			providers = append(providers, deepseek.NewClient(providerSetting))
+		case keys.ProviderTypeQwen:
+			providers = append(providers, qwen.NewClient(providerSetting))
 		default:
 			continue
 		}
@@ -74,14 +79,13 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	settings.Tui.LoadAndInit()
 
-	for _, provider := range newProviderBySettings(settings.Tui.Agent) {
+	for _, provider := range newProviderBySettings(settings.Agent) {
 		llm.RegisterProvider(provider)
 	}
 
 	var m llm.Model
-	if got, ok := llm.GetModel(settings.Tui.Agent.DefaultModel); ok {
+	if got, ok := llm.GetModel(settings.Agent.DefaultModel); ok {
 		m = got
 	}
 	if m.ID == "" {
@@ -95,6 +99,11 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		tools.NewEditTool(),
 		tools.NewGrepTool(),
 		tools.NewListTool(),
+	}
+
+	// Optionally wire RAG search tool if rag is configured.
+	if rt := newRagToolFromSettings(settings); rt != nil {
+		builtinTools = append(builtinTools, rt)
 	}
 
 	workDir, _ := os.Getwd()
@@ -131,6 +140,56 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		model.session = opts.Session
 	}
 	return model, nil
+}
+
+// newRagToolFromSettings builds a Retriever + ragTool based on global settings.
+// It mirrors the RAG configuration used by the CLI rag index command.
+func newRagToolFromSettings(settings *config.Settings) agent.AgentTool {
+	// Require at least one provider.
+	if len(settings.Agent.Providers) == 0 || settings.Agent.Providers[0] == nil {
+		return nil
+	}
+
+	// Resolve embedding provider.
+	embProvider := settings.Agent.DefaultEmbeddingProvider
+	if embProvider == "" {
+		embProvider = settings.Agent.DefaultProvider
+	}
+	provider := config.FindProviderSetting(settings.Agent.Providers, embProvider)
+	if provider == nil {
+		provider = settings.Agent.Providers[0]
+	}
+
+	// Resolve embedding model.
+	embedModel := settings.Agent.DefaultEmbeddingModel
+	if embedModel == "" {
+		embedModel = keys.GetDefaultEmbeddingModel(provider.Provider)
+		if embedModel == "" {
+			embedModel = settings.Agent.DefaultModel
+		}
+	}
+
+	// Build embedder.
+	embClient := openai.NewEmbeddingClient(provider.BaseURL, provider.ApiKey, embedModel, nil)
+	embedder := rag.NewOpenAIEmbedder(embClient)
+
+	// Choose vector store implementation.
+	var store rag.VectorStore
+	switch settings.Rag.VectorStoreType {
+	case keys.VectorStoreTypeQdrant:
+		s, err := rag.NewVectorStoreQdrantFromConfig(settings.Rag.Qdrant)
+		if err != nil {
+			log.Debugf("[tui] newRagToolFromSettings: init qdrant store err=%v", err)
+			return nil
+		}
+		store = s
+	default:
+		store = rag.NewInMemoryVectorStore()
+	}
+
+	// Build retriever and tool.
+	retriever := rag.NewSimpleRetriever(embedder, store)
+	return tools.NewRagTool(retriever)
 }
 
 func (m Model) Init() tea.Cmd {

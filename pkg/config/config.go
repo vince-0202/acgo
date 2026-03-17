@@ -39,15 +39,8 @@ func LoadSettings() (*Settings, error) {
 		s.Session.Root = expandHome(s.Session.Root)
 	}
 
-	// Allow environment variables like OPENAI_API_KEY to override API keys.
-	if s.APIKeys == nil {
-		s.APIKeys = map[string]string{}
-	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		s.APIKeys["openai"] = key
-	}
-
-	s.Log.loadAndInit()
+	s.Log.LoadAndInit()
+	s.Agent.LoadAndInit()
 
 	return &s, nil
 }

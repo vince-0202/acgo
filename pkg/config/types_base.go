@@ -9,18 +9,29 @@ import (
 
 // Settings represents the merged configuration for acgo.
 type Settings struct {
-	DefaultProvider string            `mapstructure:"default_provider"`
-	DefaultModelID  string            `mapstructure:"default_model_id"`
-	APIKeys         map[string]string `mapstructure:"api_keys"`
-	Log             Log               `mapstructure:"log"`
-	Tui             Tui               `mapstructure:"tui"`
-	Session         SessionConfig     `mapstructure:"session"`
+	Log     Log           `mapstructure:"log"`
+	Agent   AgentSetting  `mapstructure:"agent"`
+	Session SessionConfig `mapstructure:"session"`
+	Rag     RagSetting    `mapstructure:"rag"`
 }
 
 // SessionConfig holds session storage settings.
 type SessionConfig struct {
 	// Root is the directory for session JSONL files (default: ~/.acgo/sessions).
 	Root string `mapstructure:"root"`
+}
+
+func NewDefaultProviderSettingByProvider(providerType keys.ProviderType) *ProviderSetting {
+	switch providerType {
+	case keys.ProviderTypeOpenAi:
+		return newDefaultOpenaiProviderSetting()
+	case keys.ProviderTypeDeepSeek:
+		return newDefaultDeepseekProviderSetting()
+	case keys.ProviderTypeQwen:
+		return newDefaultQwenProviderSetting()
+	default:
+		panic("invalid Provider type")
+	}
 }
 
 type ProviderSetting struct {
@@ -30,14 +41,12 @@ type ProviderSetting struct {
 	Models   []ModelSetting    `mapstructure:"Models"`
 }
 
-func NewDefaultProviderSettingByProvider(providerType keys.ProviderType) *ProviderSetting {
-	switch providerType {
-	case keys.ProviderTypeOpenAi:
-		return newDefaultOpenaiProviderSetting()
-	case keys.ProviderTypeDeepSeek:
-		return newDefaultDeepseekProviderSetting()
-	default:
-		panic("invalid Provider type")
+func (s *ProviderSetting) Init() {
+	if s.BaseURL == "" {
+		s.BaseURL = string(keys.GetAPIBaseURL(s.Provider))
+	}
+	if len(s.Models) == 0 {
+		s.Models = NewDefaultModelsByProvider(s.Provider)
 	}
 }
 
@@ -61,6 +70,16 @@ func newDefaultDeepseekProviderSetting() *ProviderSetting {
 	}
 }
 
+func newDefaultQwenProviderSetting() *ProviderSetting {
+	var qwen keys.ProviderType = keys.ProviderTypeQwen
+	return &ProviderSetting{
+		Provider: qwen,
+		BaseURL:  string(keys.GetAPIBaseURL(qwen)),
+		ApiKey:   "DASHSCOPE_API_KEY", // 百炼控制台 API Key，见 https://bailian.console.aliyun.com
+		Models:   NewDefaultModelsByProvider(qwen),
+	}
+}
+
 type ModelSetting struct {
 	ID            string                 `mapstructure:"id"`             // unique identifier within Provider
 	Name          string                 `mapstructure:"name"`           // human readable name
@@ -77,6 +96,8 @@ func NewDefaultModelsByProvider(providerType keys.ProviderType) []ModelSetting {
 		return defaultOpenAIModels()
 	case keys.ProviderTypeDeepSeek:
 		return DefaultDeepSeekModels()
+	case keys.ProviderTypeQwen:
+		return DefaultQwenModels()
 	}
 	panic("unknown Provider type")
 }
@@ -119,6 +140,50 @@ func DefaultDeepSeekModels() []ModelSetting {
 	}
 }
 
+// DefaultQwenModels returns the standard 阿里云百炼千问 model list (OpenAI compatible).
+// 模型列表: https://help.aliyun.com/zh/model-studio/getting-started/models
+func DefaultQwenModels() []ModelSetting {
+	return []ModelSetting{
+		{
+			ID:            "qwen-plus",
+			Name:          "千问 Plus",
+			API:           "chat-completions",
+			ContextWindow: 128_000,
+			MaxTokens:     8_192,
+			Input:         []keys.InputCapability{keys.InputCapabilityText},
+			Reasoning:     keys.ThinkingLow,
+		},
+		{
+			ID:            "qwen-turbo",
+			Name:          "千问 Turbo",
+			API:           "chat-completions",
+			ContextWindow: 128_000,
+			MaxTokens:     6_000,
+			Input:         []keys.InputCapability{keys.InputCapabilityText},
+			Reasoning:     keys.ThinkingNone,
+		},
+		{
+			ID:            "qwen-max",
+			Name:          "千问 Max",
+			API:           "chat-completions",
+			ContextWindow: 32_768,
+			MaxTokens:     8_192,
+			Input:         []keys.InputCapability{keys.InputCapabilityText},
+			Reasoning:     keys.ThinkingMedium,
+		},
+		// Embedding 模型，便于在配置中直接选择 text-embedding-v3 作为 default_embedding_model。
+		{
+			ID:            keys.DefaultQwenEmbeddingModel,
+			Name:          "千问 Text Embedding v3",
+			API:           "embeddings",
+			ContextWindow: 8_192,
+			MaxTokens:     8_192,
+			Input:         []keys.InputCapability{keys.InputCapabilityText},
+			Reasoning:     keys.ThinkingNone,
+		},
+	}
+}
+
 // Log holds all log-related configuration.
 type Log struct {
 	// Level is the log verbosity: "error", "warn", "info", "debug". Default "info".
@@ -136,7 +201,7 @@ func (s *Log) loadFromEnv() {
 	}
 }
 
-func (s *Log) loadAndInit() {
+func (s *Log) LoadAndInit() {
 	// 首先取环境变量中的值
 	s.loadFromEnv()
 	// 设置初始值

@@ -15,6 +15,7 @@ const (
 	ProviderTypeUnknown  ProviderType = "unknown"
 	ProviderTypeOpenAi                = "openai"
 	ProviderTypeDeepSeek              = "deepseek"
+	ProviderTypeQwen     ProviderType = "qwen" // 阿里云百炼千问，OpenAI 兼容 API
 )
 
 func GetAPIBaseURL(p ProviderType) ProviderApiBaseUrl {
@@ -23,6 +24,8 @@ func GetAPIBaseURL(p ProviderType) ProviderApiBaseUrl {
 		return OpenAiApiBaseUrl
 	case ProviderTypeDeepSeek:
 		return DeepSeekApiBaseUrl
+	case ProviderTypeQwen:
+		return QwenApiBaseUrl
 	default:
 		return ""
 	}
@@ -35,6 +38,10 @@ const (
 	OpenAiApiBaseUrl ProviderApiBaseUrl = "https://api.openai.com/v1"
 	// DeepSeekApiBaseUrl is the default base URL for ProviderTypeDeepSeek's OpenAI-compatible API.
 	DeepSeekApiBaseUrl ProviderApiBaseUrl = "https://api.deepseek.com"
+	// QwenApiBaseUrl is the default base URL for 阿里云百炼千问 (DashScope compatible-mode, 华北2 北京).
+	// 其他地域: 新加坡 https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+	// 美国弗吉尼亚: https://dashscope-us.aliyuncs.com/compatible-mode/v1
+	QwenApiBaseUrl ProviderApiBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 
 func GetProviderTypeByAPIBaseURL(url string) ProviderType {
@@ -43,8 +50,29 @@ func GetProviderTypeByAPIBaseURL(url string) ProviderType {
 		return ProviderTypeOpenAi
 	case DeepSeekApiBaseUrl:
 		return ProviderTypeDeepSeek
+	case QwenApiBaseUrl:
+		return ProviderTypeQwen
 	default:
 		return ProviderTypeUnknown
+	}
+}
+
+// Default embedding model IDs for RAG (OpenAI-compatible /embeddings endpoint).
+// 百炼文档: https://help.aliyun.com/zh/model-studio/developer-reference/embedding-interfaces-compatible-with-openai
+const (
+	// DefaultQwenEmbeddingModel 百炼默认文本向量模型，支持 dimensions 等参数
+	DefaultQwenEmbeddingModel = "text-embedding-v3"
+)
+
+// GetDefaultEmbeddingModel returns the embedding model ID for the provider when doing RAG.
+// If the provider has a dedicated embedding model (e.g. Qwen text-embedding-v3), return it;
+// otherwise return "" and the caller should use the chat default model.
+func GetDefaultEmbeddingModel(p ProviderType) string {
+	switch p {
+	case ProviderTypeQwen:
+		return DefaultQwenEmbeddingModel
+	default:
+		return ""
 	}
 }
 
