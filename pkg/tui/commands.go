@@ -10,6 +10,7 @@ import (
 	"acgo/pkg/keys"
 	"acgo/pkg/llm"
 	"acgo/pkg/session"
+	"acgo/pkg/skills"
 )
 
 func (m *Model) registerCommand(spec commandSpec) {
@@ -237,6 +238,42 @@ func (m *Model) registerBuiltinCommands() {
 	})
 
 	m.registerCommand(commandSpec{
+		Name:  "skill",
+		Usage: "/skill <name>",
+		Help:  "Apply skill by name to the next message (model should call skill_search).",
+		Handle: func(m *Model, arg string) (string, bool) {
+			name := strings.TrimSpace(arg)
+			if name == "" {
+				return "usage: /skill <name> (e.g. /skill code-review)", false
+			}
+			m.pendingSkillContent = "请先调用 skill_search 工具查询该 skill（name=" + name + "）并严格遵循 SKILL.md 内容，然后再处理下面用户请求。"
+			return "next message will ask model to use skill_search: " + name, false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "skills",
+		Usage: "/skills",
+		Help:  "List available skills (from disk).",
+		Handle: func(m *Model, _ string) (string, bool) {
+			skillList, _ := skills.Load(m.workDir)
+			if len(skillList) == 0 {
+				return "no skills loaded (add SKILL.md in ~/.acgo/skills/ or .acgo/skills/)", false
+			}
+			var b strings.Builder
+			b.WriteString("loaded skills:\n")
+			for _, s := range skillList {
+				b.WriteString("  " + s.Name)
+				if s.Description != "" {
+					b.WriteString(" - " + s.Description)
+				}
+				b.WriteString("\n")
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
 		Name:  "reload",
 		Usage: "/reload",
 		Help:  "Reload context files and refresh system prompt.",
@@ -247,7 +284,8 @@ func (m *Model) registerBuiltinCommands() {
 			ctxResult := contextfile.Load(m.workDir)
 			m.contextPaths = append([]string(nil), ctxResult.Paths...)
 			m.agent.SetSystemPrompt(ctxResult.Prompt)
-			return fmt.Sprintf("reloaded: %d file(s), system prompt %d chars", len(ctxResult.Paths), len(strings.TrimSpace(ctxResult.Prompt))), false
+			merged := strings.TrimSpace(m.agent.State().SystemPrompt)
+			return fmt.Sprintf("reloaded: %d file(s), system prompt %d chars", len(ctxResult.Paths), len(merged)), false
 		},
 	})
 }

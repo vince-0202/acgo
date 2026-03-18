@@ -47,12 +47,18 @@ type Model struct {
 	// context files (P1.3)
 	workDir      string
 	contextPaths []string
+
+	// pendingSkillContent: when set, next user message is prefixed with this (for /skill:name).
+	pendingSkillContent string
 }
 
 // streamEvent is sent from the agent goroutine for each delta or done/error.
 type streamEvent struct {
 	Delta         string // text content delta
 	ThinkingDelta string // reasoning/thinking delta (pi-ai thinking_* events)
+	ToolText      string // human-friendly tool execution log line(s)
+	FinalContent  string // finalized assistant content at message end (ordered output)
+	FinalThinking string // finalized assistant thinking at message end (ordered output)
 	Done          bool
 	Err           error
 	Ch            chan streamEvent
@@ -121,6 +127,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		tools.NewListTool(),
 		tools.NewRagTool(),
 		tools.NewMemoryRecallTool(),
+		tools.NewSkillSearchTool(),
 	}
 
 	workDir, _ := os.Getwd()
@@ -232,6 +239,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.textarea.SetValue("")
+				if m.pendingSkillContent != "" {
+					input = m.pendingSkillContent + "\n\n---\n\n" + input
+					m.pendingSkillContent = ""
+				}
 				log.Debugf("send prompt len=%d", len(input))
 				m.history = append(m.history, "You: "+input)
 				return m, m.runAgentStream(input)
@@ -254,6 +265,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case streamEvent:
+		// Flush finalized assistant chunks in chronological order.
+		// This makes tool logs interleave correctly with thinking/content between tool calls.
+		if msg.FinalThinking != "" {
+			m.history = append(m.history, "[Thinking] "+msg.FinalThinking)
+			m.streamingThinking = ""
+		}
+		if msg.FinalContent != "" {
+			m.history = append(m.history, "Assistant: "+msg.FinalContent)
+			m.streamingContent = ""
+		}
 		if msg.Done || msg.Err != nil {
 			if msg.Err != nil {
 				log.Debugf("stream done err=%v", msg.Err)
@@ -271,6 +292,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingContent = ""
 			m.streamingThinking = ""
 			return m, nil
+		}
+		if msg.ToolText != "" {
+			// Tool execution logs are emitted from agent goroutine; only append to history here (UI thread).
+			m.history = append(m.history, strings.Split(msg.ToolText, "\n")...)
 		}
 		if msg.ThinkingDelta != "" {
 			m.streamingThinking += msg.ThinkingDelta
@@ -403,6 +428,15 @@ func (m *Model) runCommand(raw string) (reply string, quit bool) {
 	if !ok {
 		return "not a command", false
 	}
+	// Support /skill:name form: treat "skill:code-review" as cmd=skill, arg=code-review
+	if i := strings.Index(cmd, ":"); i >= 0 && i < len(cmd)-1 {
+		if arg == "" {
+			arg = strings.TrimSpace(cmd[i+1:])
+		} else {
+			arg = strings.TrimSpace(cmd[i+1:]) + " " + arg
+		}
+		cmd = cmd[:i]
+	}
 	spec, ok := m.commands[cmd]
 	if !ok || spec.Handle == nil {
 		return "unknown command: /" + cmd + " (try /help)", false
@@ -524,7 +558,129 @@ func (m *Model) handleAgentEvent(e agent.Event, done *atomic.Bool, ch chan strea
 			default:
 			}
 		}
+	case agent.EventMessageEnd:
+		// Streamed deltas are accumulated in UI state; when the assistant message ends
+		// (often right before tool execution), flush finalized content/thinking so the
+		// following tool logs appear in correct chronological order.
+		if e.Message == nil || e.Message.Role != keys.AgentRoleAssistant {
+			return
+		}
+		finalThinking := strings.TrimSpace(e.Message.Thinking)
+		finalContent := strings.TrimSpace(e.Message.Content)
+		if finalThinking == "" && finalContent == "" {
+			return
+		}
+		select {
+		case ch <- streamEvent{FinalThinking: finalThinking, FinalContent: finalContent, Ch: ch}:
+		default:
+		}
+	case agent.EventToolExecutionStart:
+		lines := formatToolExecutionStartLines(e.ToolName, e.ToolCallID, e.ToolArgs)
+		if len(lines) == 0 {
+			return
+		}
+		select {
+		case ch <- streamEvent{ToolText: strings.Join(lines, "\n"), Ch: ch}:
+		default:
+		}
+	case agent.EventToolExecutionEnd:
+		name := strings.TrimSpace(e.ToolName)
+		if name == "" {
+			name = "unknown"
+		}
+		lines := formatToolExecutionEndLines(name, e.ToolCallID, e.ToolArgs, e.Message, e.Error)
+		if len(lines) == 0 {
+			return
+		}
+		select {
+		case ch <- streamEvent{ToolText: strings.Join(lines, "\n"), Ch: ch}:
+		default:
+		}
 	}
+}
+
+func formatToolExecutionStartLines(toolName string, toolCallID string, args []byte) []string {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return nil
+	}
+	id := strings.TrimSpace(toolCallID)
+
+	// Claude-code-like: show tool name + args as an indented block.
+	head := "Tool > " + toolName
+	if id != "" {
+		head += " (" + id + ")"
+	}
+	lines := []string{head}
+
+	argText := strings.TrimSpace(string(args))
+	if argText != "" && argText != "null" {
+		lines = append(lines, "  args: "+argText)
+	}
+	return lines
+}
+
+func formatToolExecutionEndLines(toolName string, toolCallID string, args []byte, msg *agent.Message, execErr error) []string {
+	const maxPreviewChars = 500
+	const maxPreviewLines = 12
+
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		toolName = "unknown"
+	}
+	id := strings.TrimSpace(toolCallID)
+
+	// Prefer tool result content from message; fall back to execErr.
+	content := ""
+	isError := false
+	if msg != nil {
+		content = strings.TrimSpace(msg.Content)
+		isError = msg.IsError
+	}
+	if content == "" && execErr != nil {
+		content = strings.TrimSpace(execErr.Error())
+		isError = true
+	}
+
+	status := "ok"
+	if isError || execErr != nil {
+		status = "error"
+	}
+
+	// Claude-code-like: show end marker, and include args/output in the block.
+	head := fmt.Sprintf("Tool < %s (%s)", toolName, status)
+	if id != "" {
+		head += " (" + id + ")"
+	}
+	lines := []string{head}
+
+	argText := strings.TrimSpace(string(args))
+	if argText != "" && argText != "null" {
+		lines = append(lines, "  args: "+argText)
+	}
+
+	if content == "" {
+		return lines
+	}
+
+	preview := content
+	// line cap first (keeps structure), then char cap.
+	if split := strings.Split(preview, "\n"); len(split) > maxPreviewLines {
+		preview = strings.Join(split[:maxPreviewLines], "\n") + "\n…"
+	}
+	if len(preview) > maxPreviewChars {
+		preview = preview[:maxPreviewChars] + "…"
+	}
+
+	// Indent preview for readability.
+	for _, line := range strings.Split(preview, "\n") {
+		if strings.TrimSpace(line) == "" {
+			lines = append(lines, "  ")
+			continue
+		}
+		lines = append(lines, "  out: "+line)
+	}
+	return lines
 }
 
 // Run launches the TUI. If sessionPath is empty, a new session file is created under config session root.

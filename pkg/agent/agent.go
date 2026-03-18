@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -339,6 +341,8 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 		Tools:           agentToolsToLlm(a.state.Tools),
 		ReasoningEffort: a.state.ThinkingLevel,
 	}
+
+	a.debugLogLLMRequest(turnID, llmCtx, a.state.Model, opts)
 	events, streamErr := a.streamFn(llmCtx, a.state.Model, opts)
 	if streamErr != nil {
 		kind := ClassifyError(streamErr)
@@ -382,6 +386,82 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 		return lastErr, false
 	}
 	return nil, len(a.state.PendingToolCalls) > 0
+}
+
+func (a *Agent) debugLogLLMRequest(turnID string, llmCtx llm.Context, model llm.Model, opts *llm.Options) {
+	// Only emits at debug level; safe to call unconditionally.
+	const maxMsgChars = 240
+	const maxSystemPromptChars = 1200
+
+	var toolNames []string
+	if opts != nil {
+		for _, t := range opts.Tools {
+			toolNames = append(toolNames, t.Name)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("llm request:\n")
+	b.WriteString("  turn_id: " + turnID + "\n")
+	b.WriteString("  model: " + strings.TrimSpace(model.Provider) + "/" + strings.TrimSpace(model.ID) + "\n")
+	if opts != nil {
+		b.WriteString("  reasoning_effort: " + string(opts.ReasoningEffort) + "\n")
+	}
+	sys := strings.TrimSpace(a.state.SystemPrompt)
+	sysPreview := sys
+	if len(sysPreview) > maxSystemPromptChars {
+		sysPreview = sysPreview[:maxSystemPromptChars] + "…"
+	}
+	b.WriteString("  system_prompt_chars: " + strconv.Itoa(len(sys)) + "\n")
+	if sysPreview != "" {
+		b.WriteString("  system_prompt: " + strconv.Quote(sysPreview) + "\n")
+	} else {
+		b.WriteString("  system_prompt: (empty)\n")
+	}
+	if len(toolNames) > 0 {
+		b.WriteString("  tools: " + strings.Join(toolNames, ", ") + "\n")
+	} else {
+		b.WriteString("  tools: (none)\n")
+	}
+	b.WriteString("  messages:\n")
+	for i, m := range llmCtx.Messages {
+		role := string(m.Role)
+		snippet := ""
+		if len(m.Content) > 0 {
+			// Prefer text snippets; ignore non-text blocks for logging.
+			for _, blk := range m.Content {
+				if blk.Type == "text" && strings.TrimSpace(blk.Text) != "" {
+					snippet = strings.TrimSpace(blk.Text)
+					break
+				}
+			}
+		}
+		if snippet == "" && m.ToolResult != nil {
+			for _, blk := range m.ToolResult.Content {
+				if blk.Type == "text" && strings.TrimSpace(blk.Text) != "" {
+					snippet = strings.TrimSpace(blk.Text)
+					break
+				}
+			}
+		}
+		if len(snippet) > maxMsgChars {
+			snippet = snippet[:maxMsgChars] + "…"
+		}
+
+		line := "    - [" + strconv.Itoa(i) + "] " + role
+		if m.ToolCall != nil && strings.TrimSpace(m.ToolCall.Name) != "" {
+			line += " tool_call=" + strings.TrimSpace(m.ToolCall.Name)
+		}
+		if m.ToolResult != nil && strings.TrimSpace(m.ToolResult.ToolCallID) != "" {
+			line += " tool_result_call_id=" + strings.TrimSpace(m.ToolResult.ToolCallID)
+		}
+		if snippet != "" {
+			line += " text=" + strconv.Quote(snippet)
+		}
+		b.WriteString(line + "\n")
+	}
+
+	log.Debug(strings.TrimSuffix(b.String(), "\n"))
 }
 
 // processStreamEvents consumes the event channel and updates assistant state; emits MessageUpdate events.
@@ -474,6 +554,7 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 	for _, call := range calls {
 		tool := a.findTool(call.Name)
 		if tool == nil {
+			args := llm.NormalizeToolCallArguments(call.Arguments)
 			toolMsg := Message{
 				ID:         "tool-" + call.ID,
 				Role:       keys.AgentRoleTool,
@@ -483,23 +564,26 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 			}
 			a.AppendMessage(toolMsg)
 			a.emit(Event{
-				Type:      EventToolExecutionEnd,
-				AgentID:   a.id,
-				ToolName:  call.Name,
-				Message:   &toolMsg,
-				Error:     llm.ErrUnknownProvider(call.Name),
-				ErrorKind: ErrKindTool,
+				Type:       EventToolExecutionEnd,
+				AgentID:    a.id,
+				ToolName:   call.Name,
+				ToolCallID: call.ID,
+				ToolArgs:   args,
+				Message:    &toolMsg,
+				Error:      llm.ErrUnknownProvider(call.Name),
+				ErrorKind:  ErrKindTool,
 			})
 			continue
 		}
 
-		a.emit(Event{
-			Type:     EventToolExecutionStart,
-			AgentID:  a.id,
-			ToolName: tool.Name(),
-		})
-
 		args := llm.NormalizeToolCallArguments(call.Arguments)
+		a.emit(Event{
+			Type:       EventToolExecutionStart,
+			AgentID:    a.id,
+			ToolName:   tool.Name(),
+			ToolCallID: call.ID,
+			ToolArgs:   args,
+		})
 
 		result, err := tool.Execute(ctx, call.ID, args, nil)
 		if err != nil {
@@ -520,12 +604,14 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 		a.AppendMessage(toolMsg)
 
 		a.emit(Event{
-			Type:      EventToolExecutionEnd,
-			AgentID:   a.id,
-			ToolName:  tool.Name(),
-			Message:   &toolMsg,
-			Error:     err,
-			ErrorKind: ErrKindTool,
+			Type:       EventToolExecutionEnd,
+			AgentID:    a.id,
+			ToolName:   tool.Name(),
+			ToolCallID: call.ID,
+			ToolArgs:   args,
+			Message:    &toolMsg,
+			Error:      err,
+			ErrorKind:  ErrKindTool,
 		})
 	}
 }

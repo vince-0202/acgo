@@ -1,6 +1,10 @@
 package agent
 
-import "acgo/pkg/llm"
+import (
+	"encoding/json"
+
+	"acgo/pkg/llm"
+)
 
 // EventType mirrors the high-level event types from pi-agent-core.
 type EventType string
@@ -20,14 +24,16 @@ const (
 
 // Event carries information about state changes, messages and tool executions.
 type Event struct {
-	Type      EventType
-	AgentID   string
-	TurnID    string
-	Message   *Message
-	ToolName  string
-	LlmEvent  *llm.Event
-	Error     error
-	ErrorKind ErrKind // classification for UI; set when Error is set
+	Type       EventType
+	AgentID    string
+	TurnID     string
+	Message    *Message
+	ToolName   string
+	ToolCallID string
+	ToolArgs   json.RawMessage
+	LlmEvent   *llm.Event
+	Error      error
+	ErrorKind  ErrKind // classification for UI; set when Error is set
 }
 
 // Listener is a callback that receives events from the Agent.
