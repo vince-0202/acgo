@@ -191,7 +191,12 @@ func (c *httpQdrantClient) Search(ctx context.Context, collection string, vector
 		WithPayload:    qdrant.NewWithPayload(true),
 		WithVectors:    qdrant.NewWithVectors(true),
 	}
-	// TODO: map `filters` into qdrant.Filter if needed.
+	if len(filters) > 0 {
+		f := buildQdrantFilter(filters)
+		if f != nil {
+			query.Filter = f
+		}
+	}
 
 	resp, err := c.grpcClient.Query(ctx, query)
 	if err != nil {
@@ -231,6 +236,80 @@ func (c *httpQdrantClient) Search(ctx context.Context, collection string, vector
 		})
 	}
 	return out, nil
+}
+
+// buildQdrantFilter converts our simple `filters` map into a qdrant.Filter.
+//
+// Supported value types:
+// - string: exact match
+// - []string: match any of the keywords (OR within the same key)
+// - []any: each element must be string; same semantics as []string
+//
+// All provided keys are combined with AND (Must).
+func buildQdrantFilter(filters map[string]any) *qdrant.Filter {
+	if len(filters) == 0 {
+		return nil
+	}
+	must := make([]*qdrant.Condition, 0, len(filters))
+	for key, rawVal := range filters {
+		if key == "" || rawVal == nil {
+			continue
+		}
+
+		switch v := rawVal.(type) {
+		case string:
+			must = append(must, &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{Field: &qdrant.FieldCondition{
+					Key: key,
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Keyword{Keyword: v},
+					},
+				}},
+			})
+		case []string:
+			if len(v) == 0 {
+				continue
+			}
+			must = append(must, &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{Field: &qdrant.FieldCondition{
+					Key: key,
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Keywords{
+							Keywords: &qdrant.RepeatedStrings{Strings: v},
+						},
+					},
+				}},
+			})
+		case []any:
+			var ss []string
+			for _, it := range v {
+				s, ok := it.(string)
+				if ok && s != "" {
+					ss = append(ss, s)
+				}
+			}
+			if len(ss) == 0 {
+				continue
+			}
+			must = append(must, &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{Field: &qdrant.FieldCondition{
+					Key: key,
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Keywords{
+							Keywords: &qdrant.RepeatedStrings{Strings: ss},
+						},
+					},
+				}},
+			})
+		default:
+			// Unknown filter type: ignore rather than breaking retrieval.
+			continue
+		}
+	}
+	if len(must) == 0 {
+		return nil
+	}
+	return &qdrant.Filter{Must: must}
 }
 
 func (c *httpQdrantClient) DeleteByIDs(ctx context.Context, collection string, ids []string) error {

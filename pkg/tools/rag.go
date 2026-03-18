@@ -53,7 +53,9 @@ func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawM
 	if topK <= 0 {
 		topK = 8
 	}
-	chunks, err := t.retriever.Retrieve(ctx, params.Query, topK, nil)
+	chunks, err := t.retriever.Retrieve(ctx, params.Query, topK, map[string]any{
+		"mem_kind": "document",
+	})
 	if err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}

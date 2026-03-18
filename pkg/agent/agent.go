@@ -7,6 +7,8 @@ import (
 
 	"acgo/pkg/keys"
 	"acgo/pkg/llm"
+	"acgo/pkg/log"
+	"acgo/pkg/memory"
 )
 
 // Options configures an Agent instance.
@@ -15,6 +17,15 @@ type Options struct {
 	StreamFn         llm.StreamFunc
 	ConvertToLlm     func([]Message) []llm.Message
 	TransformContext func([]Message, context.Context) []Message
+
+	// MemoryWriter is optional. When set, Agent will automatically write
+	// long-term dialogue memories after each user->assistant exchange.
+	MemoryWriter MemoryWriter
+}
+
+// MemoryWriter stores conversation memories for long-term retrieval.
+type MemoryWriter interface {
+	WriteDialogue(ctx context.Context, sessionID string, userText string, assistantText string) error
 }
 
 // Agent coordinates LLM calls, tools and state updates.
@@ -32,6 +43,8 @@ type Agent struct {
 
 	queueMu       sync.Mutex // protects SteeringQueue and FollowUpQueue
 	currentCancel context.CancelFunc
+
+	memoryWriter MemoryWriter
 }
 
 // listenerSlot holds a listener and an id so Subscribe can return a working unsub.
@@ -43,8 +56,9 @@ type listenerSlot struct {
 // New creates a new Agent with the given options.
 func New(id string, opts Options) *Agent {
 	a := &Agent{
-		id:    id,
-		state: opts.InitialState,
+		id:           id,
+		state:        opts.InitialState,
+		memoryWriter: opts.MemoryWriter,
 	}
 	if opts.StreamFn != nil {
 		a.streamFn = opts.StreamFn
@@ -239,11 +253,14 @@ func (a *Agent) Prompt(ctx context.Context, content string) error {
 		currentTurnID := time.Now().UTC().Format(time.RFC3339Nano)
 		a.emit(Event{Type: EventTurnStart, AgentID: a.id, TurnID: currentTurnID})
 
+		var userTurnMsg *Message
 		if firstTurn {
 			a.emitUserMessage(currentTurnID, &userMsg)
+			userTurnMsg = &userMsg
 			firstTurn = false
 		} else {
-			if !a.emitNextQueuedMessage(currentTurnID) {
+			userTurnMsg = a.emitNextQueuedMessage(currentTurnID)
+			if userTurnMsg == nil {
 				break
 			}
 		}
@@ -251,6 +268,17 @@ func (a *Agent) Prompt(ctx context.Context, content string) error {
 		lastErr = a.runLLMTurnsUntilDone(ctx, currentTurnID)
 		if lastErr != nil {
 			break
+		}
+
+		// Long-term memory write: user message -> final assistant content.
+		if a.memoryWriter != nil && userTurnMsg != nil {
+			sessionID, _ := memory.SessionIDFromContext(ctx)
+			assistantText := lastAssistantText(a.state.Messages)
+			if assistantText != "" || userTurnMsg.Content != "" {
+				if err := a.memoryWriter.WriteDialogue(ctx, sessionID, userTurnMsg.Content, assistantText); err != nil {
+					log.Debugf("[memory] write dialogue err=%v", err)
+				}
+			}
 		}
 	}
 
@@ -266,15 +294,15 @@ func (a *Agent) emitUserMessage(turnID string, msg *Message) {
 }
 
 // emitNextQueuedMessage drains one message from steering or follow-up queue, appends it, and emits events.
-// Returns true if a message was consumed, false if both queues were empty.
-func (a *Agent) emitNextQueuedMessage(turnID string) bool {
+// Returns the consumed message or nil if both queues were empty.
+func (a *Agent) emitNextQueuedMessage(turnID string) *Message {
 	next := a.drainOneFromQueues()
 	if next == nil {
-		return false
+		return nil
 	}
 	a.AppendMessage(*next)
 	a.emitUserMessage(turnID, next)
-	return true
+	return next
 }
 
 // runLLMTurnsUntilDone runs stream turns and tool execution until no more tool calls or an error.
@@ -500,6 +528,15 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 			ErrorKind: ErrKindTool,
 		})
 	}
+}
+
+func lastAssistantText(msgs []Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == keys.AgentRoleAssistant {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 // State AgentState holds the mutable state of an Agent instance.

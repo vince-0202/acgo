@@ -39,7 +39,7 @@ func (s *InMemoryVectorStore) Upsert(_ context.Context, records []Record) error 
 	return nil
 }
 
-func (s *InMemoryVectorStore) Search(_ context.Context, query []float32, topK int, _ map[string]any) ([]SearchResult, error) {
+func (s *InMemoryVectorStore) Search(_ context.Context, query []float32, topK int, filters map[string]any) ([]SearchResult, error) {
 	if len(query) == 0 {
 		return nil, errors.New("query vector is empty")
 	}
@@ -50,6 +50,13 @@ func (s *InMemoryVectorStore) Search(_ context.Context, query []float32, topK in
 	storeSize := len(s.items)
 	results := make([]SearchResult, 0, storeSize)
 	for _, r := range s.items {
+		// For in-memory we implement a small subset of metadata filters so
+		// memory recall can be exercised in local tests.
+		// (If you pass unsupported filter types we just skip filtering and
+		// return a broader result set.)
+		if len(filters) > 0 && !matchFilters(r, filters) {
+			continue
+		}
 		if len(r.Vector) != len(query) {
 			continue
 		}
@@ -68,6 +75,59 @@ func (s *InMemoryVectorStore) Search(_ context.Context, query []float32, topK in
 	out := results[:topK]
 	log.Debugf("[rag] InMemoryVectorStore.Search: returned=%d", len(out))
 	return out, nil
+}
+
+func matchFilters(r Record, filters map[string]any) bool {
+	for key, rawVal := range filters {
+		if key == "" || rawVal == nil {
+			continue
+		}
+		mdVal, ok := r.Metadata[key]
+		if !ok {
+			return false
+		}
+
+		switch v := rawVal.(type) {
+		case string:
+			s, ok := mdVal.(string)
+			if !ok || s != v {
+				return false
+			}
+		case []string:
+			s, ok := mdVal.(string)
+			if !ok {
+				return false
+			}
+			if !containsString(v, s) {
+				return false
+			}
+		case []any:
+			var ss []string
+			for _, it := range v {
+				s, ok := it.(string)
+				if ok && s != "" {
+					ss = append(ss, s)
+				}
+			}
+			s, ok := mdVal.(string)
+			if !ok || !containsString(ss, s) {
+				return false
+			}
+		default:
+			// Unsupported filter type: fail closed to avoid returning wrong memory sets.
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(ss []string, s string) bool {
+	for _, it := range ss {
+		if it == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *InMemoryVectorStore) DeleteByDocID(_ context.Context, ids []string) error {

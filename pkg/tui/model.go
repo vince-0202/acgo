@@ -17,6 +17,7 @@ import (
 	"acgo/pkg/llm/openai"
 	"acgo/pkg/llm/qwen"
 	"acgo/pkg/log"
+	"acgo/pkg/memory"
 	"acgo/pkg/session"
 	"acgo/pkg/tools"
 
@@ -119,6 +120,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		tools.NewGrepTool(),
 		tools.NewListTool(),
 		tools.NewRagTool(),
+		tools.NewMemoryRecallTool(),
 	}
 
 	workDir, _ := os.Getwd()
@@ -127,12 +129,18 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		log.Debugf("context file loaded: %s", p)
 	}
 
+	var memoryWriter agent.MemoryWriter
+	if mgr, err := memory.DefaultManager(); err == nil {
+		memoryWriter = mgr
+	}
+
 	ag := agent.New("default", agent.Options{
 		InitialState: agent.State{
 			SystemPrompt: ctxResult.Prompt,
 			Model:        m,
 			Tools:        builtinTools,
 		},
+		MemoryWriter: memoryWriter,
 	})
 	if opts != nil && len(opts.InitialMessages) > 0 {
 		ag.ReplaceMessages(opts.InitialMessages)
@@ -468,6 +476,9 @@ func (m *Model) runAgentStream(prompt string) tea.Cmd {
 		defer unsub()
 
 		ctx := context.Background()
+		if m.session != nil && strings.TrimSpace(m.session.Path) != "" {
+			ctx = memory.WithSessionID(ctx, m.session.Path)
+		}
 		err := m.agent.Prompt(ctx, prompt)
 		done.Store(true) // block further sends before closing
 		unsub()

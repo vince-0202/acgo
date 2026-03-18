@@ -236,6 +236,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 				ID:   uid,
 				Text: c,
 				Metadata: map[string]any{
+					"mem_kind":     "document",
 					"file_path":    path,
 					"chunk_index":  idx,
 					"chunk_doc_id": path + "#" + strconv.Itoa(idx),
