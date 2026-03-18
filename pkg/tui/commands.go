@@ -1,0 +1,253 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"acgo/pkg/contextfile"
+	"acgo/pkg/keys"
+	"acgo/pkg/llm"
+	"acgo/pkg/session"
+)
+
+func (m *Model) registerCommand(spec commandSpec) {
+	name := strings.ToLower(strings.TrimSpace(spec.Name))
+	if name == "" || spec.Handle == nil {
+		return
+	}
+	spec.Name = name
+	m.commandSpecs = append(m.commandSpecs, spec)
+	m.commands[name] = spec
+	for _, a := range spec.Aliases {
+		alias := strings.ToLower(strings.TrimSpace(a))
+		if alias == "" {
+			continue
+		}
+		m.commands[alias] = spec
+	}
+}
+
+func (m *Model) registerBuiltinCommands() {
+	m.registerCommand(commandSpec{
+		Name:    "help",
+		Aliases: []string{"h", "?"},
+		Usage:   "/help",
+		Help:    "Show available commands.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			var b strings.Builder
+			b.WriteString("commands:\n")
+			for _, s := range m.commandSpecs {
+				usage := s.Usage
+				if strings.TrimSpace(usage) == "" {
+					usage = "/" + s.Name
+				}
+				b.WriteString("  " + usage)
+				if strings.TrimSpace(s.Help) != "" {
+					b.WriteString(" - " + strings.TrimSpace(s.Help))
+				}
+				b.WriteString("\n")
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:    "quit",
+		Aliases: []string{"q"},
+		Usage:   "/quit",
+		Help:    "Quit the TUI.",
+		Handle:  func(_ *Model, _ string) (string, bool) { return "", true },
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "model",
+		Usage: "/model [provider/model_id]",
+		Help:  "List models or switch current model.",
+		Handle: func(m *Model, arg string) (string, bool) {
+			arg = strings.TrimSpace(arg)
+			if arg != "" {
+				if mod, ok := llm.GetModel(arg); ok {
+					m.agent.SetModel(mod)
+					return "model: " + mod.Provider + "/" + mod.ID, false
+				}
+				return "unknown model: " + arg, false
+			}
+			models := llm.ListModels()
+			var b strings.Builder
+			cur := m.agent.State().Model
+			b.WriteString("current: " + cur.Provider + "/" + cur.ID + "\n")
+			for _, mod := range models {
+				b.WriteString("  " + mod.Provider + "/" + mod.ID)
+				if mod.ID == cur.ID && mod.Provider == cur.Provider {
+					b.WriteString(" (current)")
+				}
+				b.WriteString("\n")
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "session",
+		Usage: "/session",
+		Help:  "Show current session file path.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			if m.session != nil && m.session.Path != "" {
+				return "session: " + m.session.Path, false
+			}
+			return "no session", false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "new",
+		Usage: "/new",
+		Help:  "Start a new session (new file + reset chat).",
+		Handle: func(m *Model, _ string) (string, bool) {
+			path, err := session.NewSessionPath(m.sessionRoot)
+			if err != nil {
+				return "create session path: " + err.Error(), false
+			}
+			sess, err := session.Create(path)
+			if err != nil {
+				return "create session: " + err.Error(), false
+			}
+			m.session = sess
+			m.sessionName = ""
+			m.agent.Reset()
+			m.err = nil
+			m.history = nil
+			m.streamingContent = ""
+			m.streamingThinking = ""
+			return "new session: " + path, false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "name",
+		Usage: "/name <title>",
+		Help:  "Set a human-readable session name (stored in session file).",
+		Handle: func(m *Model, arg string) (string, bool) {
+			title := strings.TrimSpace(arg)
+			if title == "" {
+				return "usage: /name <title>", false
+			}
+			m.sessionName = title
+			if m.session != nil && m.session.Path != "" {
+				_ = m.session.AppendMessage(session.Message{
+					ID:        "name-" + time.Now().UTC().Format(time.RFC3339Nano),
+					Role:      string(keys.AgentRoleNotification),
+					Content:   "session name: " + title,
+					CreatedAt: time.Now().UTC(),
+					Metadata: map[string]any{
+						"type": "session_name",
+						"name": title,
+					},
+				})
+			}
+			return "name: " + title, false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "tree",
+		Usage: "/tree",
+		Help:  "Show a lightweight conversation outline.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			msgs := m.agent.State().Messages
+			if len(msgs) == 0 {
+				return "(empty)", false
+			}
+			// Keep it short for the TUI: last 40 messages.
+			start := 0
+			if len(msgs) > 40 {
+				start = len(msgs) - 40
+			}
+			var b strings.Builder
+			b.WriteString("messages (latest last):\n")
+			for i := start; i < len(msgs); i++ {
+				role := string(msgs[i].Role)
+				line := fmt.Sprintf("  %d. %s", i+1, role)
+				if msgs[i].ID != "" {
+					line += " " + msgs[i].ID
+				}
+				content := strings.TrimSpace(msgs[i].Content)
+				if content != "" {
+					if len(content) > 60 {
+						content = content[:60] + "…"
+					}
+					line += " - " + content
+				}
+				b.WriteString(line + "\n")
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "reset",
+		Usage: "/reset",
+		Help:  "Reset chat (clear messages and UI state).",
+		Handle: func(m *Model, _ string) (string, bool) {
+			m.agent.Reset()
+			m.err = nil
+			m.history = nil
+			m.streamingContent = ""
+			m.streamingThinking = ""
+			return "reset done", false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "settings",
+		Usage: "/settings",
+		Help:  "Show settings file location.",
+		Handle: func(_ *Model, _ string) (string, bool) {
+			home, _ := os.UserHomeDir()
+			return "config: " + home + "/.acgo/settings.yaml", false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "system",
+		Usage: "/system",
+		Help:  "Show current system prompt summary and loaded context files.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			p := strings.TrimSpace(m.agent.State().SystemPrompt)
+			if p == "" {
+				return "(system prompt empty)", false
+			}
+			summary := p
+			if len(summary) > 400 {
+				summary = summary[:400] + "…"
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("system prompt: %d chars\n", len(p)))
+			b.WriteString(summary + "\n")
+			if len(m.contextPaths) > 0 {
+				b.WriteString("\nloaded context files:\n")
+				for _, cp := range m.contextPaths {
+					b.WriteString("  " + cp + "\n")
+				}
+			}
+			return strings.TrimSuffix(b.String(), "\n"), false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:  "reload",
+		Usage: "/reload",
+		Help:  "Reload context files and refresh system prompt.",
+		Handle: func(m *Model, _ string) (string, bool) {
+			if strings.TrimSpace(m.workDir) == "" {
+				return "workdir unknown; cannot reload", false
+			}
+			ctxResult := contextfile.Load(m.workDir)
+			m.contextPaths = append([]string(nil), ctxResult.Paths...)
+			m.agent.SetSystemPrompt(ctxResult.Prompt)
+			return fmt.Sprintf("reloaded: %d file(s), system prompt %d chars", len(ctxResult.Paths), len(strings.TrimSpace(ctxResult.Prompt))), false
+		},
+	})
+}

@@ -1,49 +1,41 @@
 package openai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
-	"acgo/pkg/keys"
-	"acgo/pkg/log"
+	oai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
 
-// EmbeddingClient is a minimal client for the OpenAI /embeddings API.
-// It is kept separate from chat completions so it can be used by pkg/rag
-// without depending on llm.Provider interfaces.
+// EmbeddingClient is a minimal client for the OpenAI embeddings API,
+// implemented with the official `openai-go` SDK.
+//
+// It is kept separate from llm.Provider implementations so it can be reused
+// by pkg/rag without depending on llm.Provider interfaces.
 type EmbeddingClient struct {
-	baseURL    string
-	apiKey     string
-	model      string
-	httpClient *http.Client
+	oai   oai.Client
+	model string
 }
 
-// NewEmbeddingClient creates a new EmbeddingClient with the given model ID.
-// baseURL should be the same root as used for Chat Completions (e.g. https://api.openai.com/v1).
+// NewEmbeddingClient creates a new EmbeddingClient for the given embedding model.
+// baseURL should be the same root used by chat requests (e.g. https://api.openai.com/v1).
 func NewEmbeddingClient(baseURL, apiKey, model string, httpClient *http.Client) *EmbeddingClient {
-	if httpClient == nil {
-		httpClient = &http.Client{}
+	opts := []option.RequestOption{
+		option.WithBaseURL(baseURL),
 	}
+	if apiKey != "" {
+		opts = append(opts, option.WithAPIKey(apiKey))
+	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
+	}
+
 	return &EmbeddingClient{
-		baseURL:    baseURL,
-		apiKey:     apiKey,
-		model:      model,
-		httpClient: httpClient,
+		oai:   oai.NewClient(opts...),
+		model: model,
 	}
-}
-
-type embeddingRequest struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
-}
-
-type embeddingResponse struct {
-	Data []struct {
-		Embedding []float32 `json:"embedding"`
-	} `json:"data"`
 }
 
 // Embed computes embeddings for the given input texts.
@@ -51,53 +43,247 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float3
 	if len(texts) == 0 {
 		return nil, nil
 	}
-	log.Debugf("[embedding] Embed: model=%s input_count=%d", c.model, len(texts))
-	body, err := json.Marshal(embeddingRequest{
-		Model: c.model,
-		Input: texts,
+
+	resp, err := c.oai.Embeddings.New(ctx, oai.EmbeddingNewParams{
+		Model: oai.EmbeddingModel(c.model),
+		Input: oai.EmbeddingNewParamsInputUnion{
+			OfArrayOfStrings: texts,
+		},
 	})
 	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set(keys.ContentType, "application/json")
-	req.Header.Set(keys.Authorization, "Bearer "+c.apiKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		log.Debugf("[embedding] Embed: request err=%v", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	log.Debugf("[embedding] Embed: status=%d", resp.StatusCode)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openai embeddings API %d", resp.StatusCode)
+		return nil, fmt.Errorf("openai embeddings API: %w", err)
 	}
 
-	var out embeddingResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-
-	vectors := make([][]float32, 0, len(out.Data))
-	for _, d := range out.Data {
-		vectors = append(vectors, d.Embedding)
-	}
-	if len(vectors) > 0 {
-		log.Debugf("[embedding] Embed: returned count=%d dim=%d", len(vectors), len(vectors[0]))
+	vectors := make([][]float32, 0, len(resp.Data))
+	for _, d := range resp.Data {
+		vec := make([]float32, 0, len(d.Embedding))
+		for _, f := range d.Embedding {
+			vec = append(vec, float32(f))
+		}
+		vectors = append(vectors, vec)
 	}
 	return vectors, nil
 }
 
-// Dim returns the embedding dimension if known. It issues a tiny request
-// with one token input when the dimension has not been observed yet.
-func (c *EmbeddingClient) Dim() int {
-	// Lazy detection is more complex (requires caching and a context),
-	// so for now callers treat 0 as \"unknown\" and rely on the first
-	// successful Embed call to infer dimension from the returned vectors.
-	return 0
+// Dim returns the embedding dimension if known.
+func (c *EmbeddingClient) Dim() int { return 0 }
+
+/*
+package openai
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	oai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+)
+
+// EmbeddingClient is a minimal client for the OpenAI embeddings API,
+// implemented with the official `openai-go` SDK.
+type EmbeddingClient struct {
+	oai   *oai.Client
+	model string
 }
+
+// NewEmbeddingClient creates a new EmbeddingClient for the given embedding model.
+// baseURL should be the same root used by chat requests (e.g. https://api.openai.com/v1).
+func NewEmbeddingClient(baseURL, apiKey, model string, httpClient *http.Client) *EmbeddingClient {
+	opts := []option.RequestOption{
+		option.WithBaseURL(baseURL),
+	}
+	if apiKey != "" {
+		opts = append(opts, option.WithAPIKey(apiKey))
+	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
+	}
+
+	return &EmbeddingClient{
+		oai:   oai.NewClient(opts...),
+		model: model,
+	}
+}
+
+// Embed computes embeddings for the given input texts.
+func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	resp, err := c.oai.Embeddings.New(ctx, oai.EmbeddingNewParams{
+		Model: oai.EmbeddingModel(c.model),
+		Input: oai.EmbeddingNewParamsInputUnion{
+			OfArrayOfStrings: texts,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("openai embeddings API: %w", err)
+	}
+
+	vectors := make([][]float32, 0, len(resp.Data))
+	for _, d := range resp.Data {
+		vec := make([]float32, 0, len(d.Embedding))
+		for _, f := range d.Embedding {
+			vec = append(vec, float32(f))
+		}
+		vectors = append(vectors, vec)
+	}
+	return vectors, nil
+}
+
+// Dim returns the embedding dimension if known.
+func (c *EmbeddingClient) Dim() int { return 0 }
+
+//
+
+package openai
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	oai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+)
+
+// EmbeddingClient is a minimal client for the OpenAI embeddings API,
+// implemented with the official `openai-go` SDK.
+//
+// It is kept separate from llm.Provider implementations so it can be reused
+// by pkg/rag without depending on llm.Provider interfaces.
+type EmbeddingClient struct {
+	oai   *oai.Client
+	model string
+}
+
+// NewEmbeddingClient creates a new EmbeddingClient for the given embedding model.
+// baseURL should be the same root used by chat requests (e.g. https://api.openai.com/v1).
+func NewEmbeddingClient(baseURL, apiKey, model string, httpClient *http.Client) *EmbeddingClient {
+	opts := []option.RequestOption{
+		option.WithBaseURL(baseURL),
+	}
+	if apiKey != "" {
+		opts = append(opts, option.WithAPIKey(apiKey))
+	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
+	}
+
+	return &EmbeddingClient{
+		oai:   oai.NewClient(opts...),
+		model: model,
+	}
+}
+
+// Embed computes embeddings for the given input texts.
+func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	resp, err := c.oai.Embeddings.New(ctx, oai.EmbeddingNewParams{
+		Model: oai.EmbeddingModel(c.model),
+		Input: oai.EmbeddingNewParamsInputUnion{
+			OfArrayOfStrings: texts,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("openai embeddings API: %w", err)
+	}
+
+	vectors := make([][]float32, 0, len(resp.Data))
+	for _, d := range resp.Data {
+		vec := make([]float32, 0, len(d.Embedding))
+		for _, f := range d.Embedding {
+			vec = append(vec, float32(f))
+		}
+		vectors = append(vectors, vec)
+	}
+	return vectors, nil
+}
+
+// Dim returns the embedding dimension if known.
+// Lazy detection is more complex (requires caching and a context), so
+// callers treat 0 as "unknown" for now.
+func (c *EmbeddingClient) Dim() int { return 0 }
+
+package openai
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	oai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+)
+
+// EmbeddingClient is a minimal client for the OpenAI embeddings API,
+// implemented with the official `openai-go` SDK.
+//
+// It is kept separate from llm.Provider implementations so it can be reused
+// by pkg/rag without depending on llm.Provider interfaces.
+type EmbeddingClient struct {
+	oai   *oai.Client
+	model string
+}
+
+// NewEmbeddingClient creates a new EmbeddingClient for the given embedding model.
+// baseURL should be the same root used by chat requests (e.g. https://api.openai.com/v1).
+func NewEmbeddingClient(baseURL, apiKey, model string, httpClient *http.Client) *EmbeddingClient {
+	if httpClient != nil {
+		return &EmbeddingClient{
+			oai: oai.NewClient(
+				option.WithBaseURL(baseURL),
+				option.WithAPIKey(apiKey),
+				option.WithHTTPClient(httpClient),
+			),
+			model: model,
+		}
+	}
+
+	return &EmbeddingClient{
+		oai: oai.NewClient(
+			option.WithBaseURL(baseURL),
+			option.WithAPIKey(apiKey),
+		),
+		model: model,
+	}
+}
+
+// Embed computes embeddings for the given input texts.
+func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	resp, err := c.oai.Embeddings.New(ctx, oai.EmbeddingNewParams{
+		Model: oai.EmbeddingModel(c.model),
+		Input: oai.EmbeddingNewParamsInputUnion{
+			OfArrayOfStrings: texts,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("openai embeddings API: %w", err)
+	}
+
+	vectors := make([][]float32, 0, len(resp.Data))
+	for _, d := range resp.Data {
+		vec := make([]float32, 0, len(d.Embedding))
+		for _, f := range d.Embedding {
+			vec = append(vec, float32(f))
+		}
+		vectors = append(vectors, vec)
+	}
+	return vectors, nil
+}
+
+// Dim returns the embedding dimension if known.
+// Lazy detection is more complex (requires caching and a context), so
+// callers treat 0 as "unknown" for now.
+func (c *EmbeddingClient) Dim() int { return 0 }
+
+*/

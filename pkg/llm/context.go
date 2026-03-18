@@ -1,5 +1,11 @@
 package llm
 
+import (
+	"context"
+	"encoding/json"
+	"time"
+)
+
 // Role describes the logical role of a message within a conversation.
 // It is intentionally close to common provider schemas (system/user/assistant/tool).
 type Role string
@@ -36,5 +42,25 @@ type Message struct {
 // Context contains the full list of messages for a call.
 // It can be freely manipulated before being passed to a provider.
 type Context struct {
-	Messages []Message `json:"messages"`
+	// Go carries the original request context (cancellation/timeout/etc).
+	// When nil, methods fall back to context.Background().
+	Go       context.Context `json:"-"`
+	Messages []Message       `json:"messages"`
+}
+
+func (c Context) goContext() context.Context {
+	if c.Go != nil {
+		return c.Go
+	}
+	return context.Background()
+}
+
+func (c Context) Deadline() (time.Time, bool) { return c.goContext().Deadline() }
+func (c Context) Done() <-chan struct{}       { return c.goContext().Done() }
+func (c Context) Err() error                  { return c.goContext().Err() }
+func (c Context) Value(key any) any           { return c.goContext().Value(key) }
+
+func (c Context) ToJson() string {
+	res, _ := json.Marshal(c.Messages)
+	return string(res)
 }

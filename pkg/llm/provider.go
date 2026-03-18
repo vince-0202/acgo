@@ -2,7 +2,6 @@ package llm
 
 import (
 	"acgo/pkg/keys"
-	"context"
 )
 
 // Options captures call-level configuration that is independent from a specific provider.
@@ -17,16 +16,16 @@ type Options struct {
 }
 
 // StreamFunc is the unified streaming interface implemented by all providers.
-type StreamFunc func(ctx context.Context, model Model, context Context, opts *Options) (<-chan Event, error)
+type StreamFunc func(callCtx Context, model Model, opts *Options) (<-chan Event, error)
 
 // CompleteFunc runs a non-streaming completion and returns the final assistant message.
-type CompleteFunc func(ctx context.Context, model Model, context Context, opts *Options) (Message, Usage, error)
+type CompleteFunc func(callCtx Context, model Model, opts *Options) (Message, Usage, error)
 
 // Provider exposes streaming and non-streaming interfaces as well as its available models.
 type Provider interface {
 	Name() string
-	Stream(ctx context.Context, model Model, context Context, opts *Options) (<-chan Event, error)
-	Complete(ctx context.Context, model Model, context Context, opts *Options) (Message, Usage, error)
+	Stream(callCtx Context, model Model, opts *Options) (<-chan Event, error)
+	Complete(callCtx Context, model Model, opts *Options) (Message, Usage, error)
 	Models() []Model
 }
 

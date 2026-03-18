@@ -304,14 +304,14 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 
 	messages := a.transformContext(a.state.Messages, ctxTurn)
 	llmMessages := a.convertToLlm(messages)
-	llmCtx := llm.Context{Messages: llmMessages}
+	llmCtx := llm.Context{Go: ctxTurn, Messages: llmMessages}
 	a.state.PendingToolCalls = nil
 
 	opts := &llm.Options{
 		Tools:           agentToolsToLlm(a.state.Tools),
 		ReasoningEffort: a.state.ThinkingLevel,
 	}
-	events, streamErr := a.streamFn(ctxTurn, a.state.Model, llmCtx, opts)
+	events, streamErr := a.streamFn(llmCtx, a.state.Model, opts)
 	if streamErr != nil {
 		kind := ClassifyError(streamErr)
 		a.state.Error = streamErr
@@ -398,7 +398,7 @@ func (a *Agent) Abort() {
 }
 
 // defaultStreamFn looks up the provider for the given model and calls its Stream function.
-func defaultStreamFn(ctx context.Context, model llm.Model, context llm.Context, opts *llm.Options) (<-chan llm.Event, error) {
+func defaultStreamFn(callCtx llm.Context, model llm.Model, opts *llm.Options) (<-chan llm.Event, error) {
 	provider, ok := llm.GetProvider(model.Provider)
 	if !ok {
 		ch := make(chan llm.Event, 1)
@@ -409,7 +409,7 @@ func defaultStreamFn(ctx context.Context, model llm.Model, context llm.Context, 
 		close(ch)
 		return ch, nil
 	}
-	return provider.Stream(ctx, model, context, opts)
+	return provider.Stream(callCtx, model, opts)
 }
 
 // upsertPendingToolCall tracks the latest version of a ToolCall by ID.

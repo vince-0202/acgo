@@ -1,5 +1,10 @@
 package keys
 
+import (
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/shared"
+)
+
 // InputCapability describes what kind of input a model supports.
 // It mirrors the capabilities exposed by pi-ai (e.g. text, image).
 type InputCapability string
@@ -87,3 +92,22 @@ const (
 	ThinkingHigh    ThinkingLevel = "high"
 	ThinkingXHigh   ThinkingLevel = "xhigh"
 )
+
+func MapReasoningEffort(level ThinkingLevel) shared.ReasoningEffort {
+	switch level {
+	case ThinkingMinimal:
+		return openai.ReasoningEffortMinimal
+	case ThinkingLow:
+		return openai.ReasoningEffortLow
+	case ThinkingMedium:
+		return openai.ReasoningEffortMedium
+	case ThinkingHigh:
+		return openai.ReasoningEffortHigh
+	case ThinkingXHigh:
+		return openai.ReasoningEffortXhigh
+	case ThinkingNone:
+		return openai.ReasoningEffortNone
+	default:
+		return openai.ReasoningEffortNone
+	}
+}

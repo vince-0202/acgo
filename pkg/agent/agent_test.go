@@ -46,7 +46,7 @@ func TestExecutePendingTools_NormalizesDoubleEncodedArguments(t *testing.T) {
 	doubleEncoded := `"{\"path\":\"/tmp/foo\"}"`
 	callCount := 0
 
-	mockStream := func(ctx context.Context, _ llm.Model, _ llm.Context, _ *llm.Options) (<-chan llm.Event, error) {
+	mockStream := func(_ llm.Context, _ llm.Model, _ *llm.Options) (<-chan llm.Event, error) {
 		callCount++
 		ch := make(chan llm.Event, 8)
 		if callCount == 1 {
@@ -96,7 +96,7 @@ func TestExecutePendingTools_EmptyArgumentsBecomeEmptyObject(t *testing.T) {
 	rec := &recordingTool{name: "write"}
 	callCount := 0
 
-	mockStream := func(ctx context.Context, _ llm.Model, _ llm.Context, _ *llm.Options) (<-chan llm.Event, error) {
+	mockStream := func(_ llm.Context, _ llm.Model, _ *llm.Options) (<-chan llm.Event, error) {
 		callCount++
 		ch := make(chan llm.Event, 8)
 		if callCount == 1 {
@@ -142,7 +142,7 @@ func TestExecutePendingTools_EmptyArgumentsBecomeEmptyObject(t *testing.T) {
 
 func TestPrompt_DrainsSteeringThenFollowUpQueues(t *testing.T) {
 	callCount := 0
-	mockStream := func(ctx context.Context, _ llm.Model, _ llm.Context, _ *llm.Options) (<-chan llm.Event, error) {
+	mockStream := func(_ llm.Context, _ llm.Model, _ *llm.Options) (<-chan llm.Event, error) {
 		callCount++
 		ch := make(chan llm.Event, 8)
 		ch <- llm.Event{Type: llm.EventStart}
