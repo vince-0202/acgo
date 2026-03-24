@@ -7,8 +7,8 @@ import (
 
 	"github.com/qdrant/go-client/qdrant"
 
-	"acgo/pkg/config"
-	"acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/log"
 )
 
 // QdrantClient is the minimal subset of a Qdrant client that VectorStoreQdrant needs.

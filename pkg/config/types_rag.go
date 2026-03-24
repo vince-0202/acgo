@@ -1,6 +1,6 @@
 package config
 
-import "acgo/pkg/keys"
+import "github.com/vince-0202/acgo/pkg/keys"
 
 // RagSetting holds configuration for retrieval-augmented generation (RAG) features.
 type RagSetting struct {

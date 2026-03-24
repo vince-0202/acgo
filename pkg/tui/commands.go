@@ -1,16 +1,16 @@
 package tui
 
 import (
-	"acgo/pkg/runtime"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/runtime"
 	"os"
 	"strings"
 	"time"
 
-	"acgo/pkg/contextfile"
-	"acgo/pkg/keys"
-	"acgo/pkg/session"
-	"acgo/pkg/skills"
+	"github.com/vince-0202/acgo/pkg/contextfile"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/session"
+	"github.com/vince-0202/acgo/pkg/skills"
 )
 
 func (m *Model) registerCommand(spec commandSpec) {

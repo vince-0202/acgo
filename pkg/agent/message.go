@@ -1,10 +1,10 @@
 package agent
 
 import (
-	"acgo/pkg/keys"
 	"context"
+	"github.com/vince-0202/acgo/pkg/keys"
 
-	"acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/llm"
 )
 
 // TransformContextOptions configures context trimming. Used by defaultTransformContext

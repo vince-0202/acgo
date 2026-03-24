@@ -1,11 +1,11 @@
 package tools
 
 import (
-	"acgo/pkg/agent"
-	"acgo/pkg/skills"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/skills"
 	"os"
 	"strings"
 )

@@ -1,8 +1,8 @@
 package qwen
 
 import (
-	"acgo/pkg/keys"
-	"acgo/pkg/llm/openai"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/llm/openai"
 	"net/http"
 )
 

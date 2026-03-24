@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 const defaultGrepMaxResults = 50

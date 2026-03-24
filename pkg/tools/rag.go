@@ -1,13 +1,13 @@
 package tools
 
 import (
-	"acgo/pkg/rag"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/rag"
 	"strings"
 
-	"acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 // ragTool exposes semantic search over the indexed document chunks.

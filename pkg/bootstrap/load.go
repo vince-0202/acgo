@@ -1,13 +1,13 @@
 package bootstrap
 
 import (
-	"acgo/pkg/config"
-	"acgo/pkg/keys"
-	"acgo/pkg/llm"
-	"acgo/pkg/llm/deepseek"
-	"acgo/pkg/llm/openai"
-	"acgo/pkg/llm/qwen"
-	"acgo/pkg/runtime"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/llm/deepseek"
+	"github.com/vince-0202/acgo/pkg/llm/openai"
+	"github.com/vince-0202/acgo/pkg/llm/qwen"
+	"github.com/vince-0202/acgo/pkg/runtime"
 )
 
 // LoadAndRuntimeInit setting and runtime

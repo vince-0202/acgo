@@ -1,18 +1,18 @@
 package agent
 
 import (
-	"acgo/pkg/contextfile"
 	"context"
+	"github.com/vince-0202/acgo/pkg/contextfile"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"acgo/pkg/keys"
-	"acgo/pkg/llm"
-	"acgo/pkg/log"
-	"acgo/pkg/memory"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/memory"
 )
 
 // Options configures an Agent instance.

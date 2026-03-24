@@ -1,11 +1,11 @@
 package main
 
 import (
-	"acgo/pkg/agent"
-	"acgo/pkg/bootstrap"
-	"acgo/pkg/config"
 	"context"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/bootstrap"
+	"github.com/vince-0202/acgo/pkg/config"
 )
 
 func main() {

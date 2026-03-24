@@ -1,13 +1,13 @@
 package bootstrap
 
 import (
-	"acgo/pkg/agent"
-	"acgo/pkg/config"
-	"acgo/pkg/llm"
-	"acgo/pkg/log"
-	"acgo/pkg/memory"
-	"acgo/pkg/runtime"
-	"acgo/pkg/tools"
+	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/memory"
+	"github.com/vince-0202/acgo/pkg/runtime"
+	"github.com/vince-0202/acgo/pkg/tools"
 	"path/filepath"
 )
 

@@ -3,7 +3,7 @@ package utils
 import (
 	"testing"
 
-	"acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/keys"
 )
 
 func TestUUID4(t *testing.T) {

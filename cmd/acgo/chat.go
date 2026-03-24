@@ -1,7 +1,7 @@
 package main
 
 import (
-	"acgo/pkg/tui"
+	"github.com/vince-0202/acgo/pkg/tui"
 
 	"github.com/spf13/cobra"
 )

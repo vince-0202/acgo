@@ -1,9 +1,9 @@
 package ingest
 
 import (
-	"acgo/pkg/rag/embedder"
-	"acgo/pkg/rag/vector"
 	"context"
+	"github.com/vince-0202/acgo/pkg/rag/embedder"
+	"github.com/vince-0202/acgo/pkg/rag/vector"
 	"strings"
 )
 

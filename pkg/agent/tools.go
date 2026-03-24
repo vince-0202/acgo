@@ -1,9 +1,9 @@
 package agent
 
 import (
-	"acgo/pkg/llm"
 	"context"
 	"encoding/json"
+	"github.com/vince-0202/acgo/pkg/llm"
 )
 
 // ToolUpdate describes an incremental update from a running tool.

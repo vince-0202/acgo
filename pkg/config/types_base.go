@@ -1,7 +1,7 @@
 package config
 
 import (
-	"acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/keys"
 	"os"
 	"path/filepath"
 	"strings"

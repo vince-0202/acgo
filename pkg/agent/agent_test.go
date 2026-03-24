@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"acgo/pkg/keys"
 	"context"
 	"encoding/json"
+	"github.com/vince-0202/acgo/pkg/keys"
 	"testing"
 
-	"acgo/pkg/config"
-	"acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/llm"
 )
 
 // recordingTool is a test AgentTool that records the last received arguments.

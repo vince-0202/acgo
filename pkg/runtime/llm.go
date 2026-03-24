@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/llm"
 )
 
 // providerRegistry keeps track of all providers.

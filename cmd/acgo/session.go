@@ -1,9 +1,9 @@
 package main
 
 import (
-	"acgo/pkg/bootstrap"
-	"acgo/pkg/session"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/bootstrap"
+	"github.com/vince-0202/acgo/pkg/session"
 
 	"github.com/spf13/cobra"
 )

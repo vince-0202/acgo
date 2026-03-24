@@ -1,12 +1,12 @@
 package memory
 
 import (
-	"acgo/pkg/keys"
-	"acgo/pkg/rag/embedder"
-	"acgo/pkg/rag/vector"
-	"acgo/pkg/utils"
 	"context"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/rag/embedder"
+	"github.com/vince-0202/acgo/pkg/rag/vector"
+	"github.com/vince-0202/acgo/pkg/utils"
 )
 
 // Chunk is a recalled memory chunk.

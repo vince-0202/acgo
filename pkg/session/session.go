@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"acgo/pkg/keys"
-	"acgo/pkg/utils"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/utils"
 )
 
 // Message is a single entry in a session log.

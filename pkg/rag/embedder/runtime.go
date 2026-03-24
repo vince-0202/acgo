@@ -1,10 +1,10 @@
 package embedder
 
 import (
-	"acgo/pkg/config"
-	"acgo/pkg/keys"
-	"acgo/pkg/llm/openai"
-	"acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/llm/openai"
+	"github.com/vince-0202/acgo/pkg/log"
 	"sync"
 )
 

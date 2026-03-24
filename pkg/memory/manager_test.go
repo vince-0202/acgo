@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"acgo/pkg/rag/embedder"
-	"acgo/pkg/rag/vector"
+	"github.com/vince-0202/acgo/pkg/rag/embedder"
+	"github.com/vince-0202/acgo/pkg/rag/vector"
 )
 
 type fakeEmbedClient struct{}

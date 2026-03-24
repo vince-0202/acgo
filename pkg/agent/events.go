@@ -3,7 +3,7 @@ package agent
 import (
 	"encoding/json"
 
-	"acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/llm"
 )
 
 // EventType mirrors the high-level event types from pi-agent-core.

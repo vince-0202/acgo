@@ -1,13 +1,13 @@
 package rag
 
 import (
-	"acgo/pkg/rag/embedder"
-	"acgo/pkg/rag/ingest"
-	"acgo/pkg/rag/vector"
 	"context"
+	"github.com/vince-0202/acgo/pkg/rag/embedder"
+	"github.com/vince-0202/acgo/pkg/rag/ingest"
+	"github.com/vince-0202/acgo/pkg/rag/vector"
 	"time"
 
-	"acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/log"
 )
 
 // SimpleRetriever is a basic implementation of Retriever.

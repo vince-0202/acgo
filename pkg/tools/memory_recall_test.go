@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"acgo/pkg/agent"
-	"acgo/pkg/memory"
+	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/memory"
 )
 
 type dialogueRawTestHandler struct{}

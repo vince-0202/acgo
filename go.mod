@@ -1,4 +1,4 @@
-module acgo
+module github.com/vince-0202/acgo
 
 go 1.24.0
 

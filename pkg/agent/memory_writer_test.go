@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"acgo/pkg/config"
-	"acgo/pkg/keys"
-	"acgo/pkg/llm"
-	"acgo/pkg/memory"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/memory"
 )
 
 type recordingMemoryWriter struct {

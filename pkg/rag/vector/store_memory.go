@@ -6,7 +6,7 @@ import (
 	"math"
 	"sync"
 
-	"acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/log"
 )
 
 // InMemoryVectorStore is a simple vector store implementation backed by a map.

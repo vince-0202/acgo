@@ -1,10 +1,10 @@
 package ingest
 
 import (
-	"acgo/pkg/rag/embedder"
-	"acgo/pkg/rag/vector"
 	"bufio"
 	"context"
+	"github.com/vince-0202/acgo/pkg/rag/embedder"
+	"github.com/vince-0202/acgo/pkg/rag/vector"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/log"
 )
 
 // DocumentLoader walks one or more root directories and yields file paths

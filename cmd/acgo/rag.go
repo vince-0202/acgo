@@ -3,10 +3,10 @@ package main
 import (
 	"fmt"
 
-	"acgo/pkg/log"
-	"acgo/pkg/rag/embedder"
-	"acgo/pkg/rag/ingest"
 	"github.com/spf13/cobra"
+	"github.com/vince-0202/acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/rag/embedder"
+	"github.com/vince-0202/acgo/pkg/rag/ingest"
 )
 
 // ragCmd groups RAG-related subcommands.

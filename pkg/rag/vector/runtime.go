@@ -1,9 +1,9 @@
 package vector
 
 import (
-	"acgo/pkg/config"
-	"acgo/pkg/keys"
-	"acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/log"
 	"sync"
 )
 

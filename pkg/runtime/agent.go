@@ -1,9 +1,9 @@
 package runtime
 
 import (
-	"acgo/pkg/agent"
-	"acgo/pkg/llm"
 	"errors"
+	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/llm"
 )
 
 var (

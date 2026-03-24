@@ -1,9 +1,9 @@
 package deepseek
 
 import (
-	"acgo/pkg/config"
-	"acgo/pkg/llm"
-	"acgo/pkg/llm/openai"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/llm/openai"
 )
 
 type Client openai.Client

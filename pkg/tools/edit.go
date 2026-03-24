@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 type editTool struct{}

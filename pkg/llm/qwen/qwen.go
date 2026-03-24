@@ -1,9 +1,9 @@
 package qwen
 
 import (
-	"acgo/pkg/config"
-	"acgo/pkg/llm"
-	"acgo/pkg/llm/openai"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/llm/openai"
 )
 
 // Client wraps OpenAI-compatible client for 阿里云百炼千问 (DashScope compatible-mode).

@@ -1,9 +1,9 @@
 package main
 
 import (
-	"acgo/pkg/config"
-	"acgo/pkg/log"
 	"github.com/spf13/cobra"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/log"
 )
 
 // rootCmd is the entrypoint for the acgo CLI.

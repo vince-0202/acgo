@@ -1,12 +1,12 @@
 package openai
 
 import (
-	"acgo/pkg/config"
-	"acgo/pkg/keys"
-	"acgo/pkg/llm"
-	"acgo/pkg/log"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/log"
 	"strings"
 
 	oai "github.com/openai/openai-go/v3"

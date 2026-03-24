@@ -1,29 +1,29 @@
 package tui
 
 import (
-	"acgo/pkg/bootstrap"
-	"acgo/pkg/utils"
 	"context"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/bootstrap"
+	"github.com/vince-0202/acgo/pkg/utils"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"acgo/pkg/agent"
-	"acgo/pkg/config"
-	"acgo/pkg/keys"
-	"acgo/pkg/llm"
-	"acgo/pkg/llm/deepseek"
-	"acgo/pkg/llm/openai"
-	"acgo/pkg/llm/qwen"
-	"acgo/pkg/log"
-	"acgo/pkg/memory"
-	"acgo/pkg/session"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/llm/deepseek"
+	"github.com/vince-0202/acgo/pkg/llm/openai"
+	"github.com/vince-0202/acgo/pkg/llm/qwen"
+	"github.com/vince-0202/acgo/pkg/log"
+	"github.com/vince-0202/acgo/pkg/memory"
+	"github.com/vince-0202/acgo/pkg/session"
 )
 
 type Model struct {
