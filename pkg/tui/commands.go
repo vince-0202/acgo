@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"acgo/pkg/runtime"
 	"fmt"
 	"os"
 	"strings"
@@ -8,7 +9,6 @@ import (
 
 	"acgo/pkg/contextfile"
 	"acgo/pkg/keys"
-	"acgo/pkg/llm"
 	"acgo/pkg/session"
 	"acgo/pkg/skills"
 )
@@ -69,13 +69,13 @@ func (m *Model) registerBuiltinCommands() {
 		Handle: func(m *Model, arg string) (string, bool) {
 			arg = strings.TrimSpace(arg)
 			if arg != "" {
-				if mod, ok := llm.GetModel(arg); ok {
+				if mod, ok := runtime.GetModel(arg); ok {
 					m.agent.SetModel(mod)
 					return "model: " + mod.Provider + "/" + mod.ID, false
 				}
 				return "unknown model: " + arg, false
 			}
-			models := llm.ListModels()
+			models := runtime.ListModels()
 			var b strings.Builder
 			cur := m.agent.State().Model
 			b.WriteString("current: " + cur.Provider + "/" + cur.ID + "\n")
@@ -225,14 +225,21 @@ func (m *Model) registerBuiltinCommands() {
 				summary = summary[:400] + "…"
 			}
 			var b strings.Builder
-			b.WriteString(fmt.Sprintf("system prompt: %d chars\n", len(p)))
-			b.WriteString(summary + "\n")
-			if len(m.contextPaths) > 0 {
-				b.WriteString("\nloaded context files:\n")
-				for _, cp := range m.contextPaths {
-					b.WriteString("  " + cp + "\n")
+			for _, ag := range runtime.ListAgents() {
+				b.WriteString("\n==================\n")
+				b.WriteString(fmt.Sprintf("agent: %v \n", ag.Id()))
+				b.WriteString(fmt.Sprintf("system prompt: %d chars\n", len(p)))
+				b.WriteString(summary + "\n")
+				contextPaths := ag.State().ContextFile.Paths
+				if len(contextPaths) > 0 {
+					b.WriteString("\nloaded context files:\n")
+					for _, cp := range contextPaths {
+						b.WriteString("  " + cp + "\n")
+					}
 				}
 			}
+
+			b.WriteString("==================")
 			return strings.TrimSuffix(b.String(), "\n"), false
 		},
 	})
@@ -281,11 +288,18 @@ func (m *Model) registerBuiltinCommands() {
 			if strings.TrimSpace(m.workDir) == "" {
 				return "workdir unknown; cannot reload", false
 			}
-			ctxResult := contextfile.Load(m.workDir)
-			m.contextPaths = append([]string(nil), ctxResult.Paths...)
-			m.agent.SetSystemPrompt(ctxResult.Prompt)
-			merged := strings.TrimSpace(m.agent.State().SystemPrompt)
-			return fmt.Sprintf("reloaded: %d file(s), system prompt %d chars", len(ctxResult.Paths), len(merged)), false
+
+			result := strings.Builder{}
+			for _, ag := range runtime.ListAgents() {
+				ctxResult := contextfile.Load(ag.State().WorkDir)
+				ag.SetContextFile(ctxResult)
+				ag.SetSystemPrompt(ctxResult.Prompt)
+				merged := strings.TrimSpace(m.agent.State().SystemPrompt)
+				agReloadResult := fmt.Sprintf("reloaded: %d file(s), system prompt %d chars for agent: %v.\n", len(ctxResult.Paths), len(merged), ag.Id())
+				result.WriteString(agReloadResult)
+			}
+
+			return result.String(), false
 		},
 	})
 }

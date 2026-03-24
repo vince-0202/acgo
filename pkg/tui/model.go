@@ -1,16 +1,18 @@
 package tui
 
 import (
+	"acgo/pkg/bootstrap"
+	"acgo/pkg/utils"
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"acgo/pkg/agent"
 	"acgo/pkg/config"
-	"acgo/pkg/contextfile"
 	"acgo/pkg/keys"
 	"acgo/pkg/llm"
 	"acgo/pkg/llm/deepseek"
@@ -19,8 +21,6 @@ import (
 	"acgo/pkg/log"
 	"acgo/pkg/memory"
 	"acgo/pkg/session"
-	"acgo/pkg/tools"
-
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -45,8 +45,7 @@ type Model struct {
 	commandSpecs []commandSpec // stable list for /help
 
 	// context files (P1.3)
-	workDir      string
-	contextPaths []string
+	workDir string
 
 	// pendingSkillContent: when set, next user message is prefixed with this (for /skill:name).
 	pendingSkillContent string
@@ -101,78 +100,36 @@ type ModelOptions struct {
 // NewModel constructs a minimal chat TUI model wired to the Agent.
 // If opts.InitialMessages is set, the agent's history is replaced with them (e.g. after loading a session).
 func NewModel(opts *ModelOptions) (*Model, error) {
-	settings, err := config.LoadSettings()
+
+	settings, err := bootstrap.Load()
 	if err != nil {
 		return nil, err
 	}
 
-	for _, provider := range newProviderBySettings(settings.Agent) {
-		llm.RegisterProvider(provider)
-	}
+	ag := bootstrap.BuildAgent(
+		settings,
+		bootstrap.WithId("tui-"+utils.NextID(keys.IdKindSnowflake)),
+		bootstrap.WithDefaultTools(),
+	)
 
-	var m llm.Model
-	if got, ok := llm.GetModel(settings.Agent.DefaultModel); ok {
-		m = got
-	}
-	if m.ID == "" {
-		return nil, fmt.Errorf("no models available for provider")
-	}
-
-	builtinTools := []agent.AgentTool{
-		tools.NewReadTool(),
-		tools.NewWriteTool(),
-		tools.NewBashTool(),
-		tools.NewEditTool(),
-		tools.NewGrepTool(),
-		tools.NewListTool(),
-		tools.NewRagTool(),
-		tools.NewMemoryRecallTool(),
-		tools.NewSkillSearchTool(),
-	}
-
-	workDir, _ := os.Getwd()
-	ctxResult := contextfile.Load(workDir)
-	for _, p := range ctxResult.Paths {
-		log.Debugf("context file loaded: %s", p)
-	}
-
-	var memoryWriter agent.MemoryWriter
-	if mgr, err := memory.DefaultManager(); err == nil {
-		memoryWriter = mgr
-	}
-
-	ag := agent.New("default", agent.Options{
-		InitialState: agent.State{
-			SystemPrompt: ctxResult.Prompt,
-			Model:        m,
-			Tools:        builtinTools,
-		},
-		MemoryWriter: memoryWriter,
-	})
 	if opts != nil && len(opts.InitialMessages) > 0 {
 		ag.ReplaceMessages(opts.InitialMessages)
 	}
 
-	ta := textarea.New()
-	ta.Placeholder = "Ask acgo about your thoughts..."
-	ta.SetHeight(1)
-	ta.ShowLineNumbers = false
-	ta.Focus()
-
 	model := &Model{
 		agent:        ag,
-		textarea:     ta,
+		textarea:     newInputTA(),
 		history:      nil,
 		width:        80,
 		height:       24,
 		commands:     map[string]commandSpec{},
 		commandSpecs: nil,
-		workDir:      workDir,
-		contextPaths: append([]string(nil), ctxResult.Paths...),
+		workDir:      settings.WorkDir,
 	}
 	if opts != nil {
 		model.session = opts.Session
 		model.sessionName = strings.TrimSpace(opts.SessionName)
+		model.history = append(model.history, renderHistoryFromMessages(opts.InitialMessages)...)
 	}
 	// sessionRoot is used by /new even when a session is already open.
 	root := settings.Session.Root
@@ -184,6 +141,15 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 
 	model.registerBuiltinCommands()
 	return model, nil
+}
+
+func newInputTA() textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = "Ask acgo about your thoughts..."
+	ta.SetHeight(1)
+	ta.ShowLineNumbers = false
+	ta.Focus()
+	return ta
 }
 
 func (m Model) Init() tea.Cmd {
@@ -685,18 +651,13 @@ func formatToolExecutionEndLines(toolName string, toolCallID string, args []byte
 
 // Run launches the TUI. If sessionPath is empty, a new session file is created under config session root.
 // If sessionPath is set, that file is opened and messages are loaded into the agent.
-func Run(sessionPath string) error {
+func Run(sessionId string) error {
 	settings, err := config.LoadSettings()
 	if err != nil {
 		return err
 	}
-	root := settings.Session.Root
-	if root == "" {
-		home, _ := os.UserHomeDir()
-		root = home + "/.acgo/sessions"
-	}
 
-	sess, initial, sessName, err := loadSessionAndMessage(sessionPath, root)
+	sess, initial, sessName, err := loadSessionAndMessage(sessionId, settings)
 	if err != nil {
 		return err
 	}
@@ -710,13 +671,13 @@ func Run(sessionPath string) error {
 	return err
 }
 
-func loadSessionAndMessage(sessionPath string, root string) (*session.Session, []agent.Message, string, error) {
+func loadSessionAndMessage(sessionId string, settings *config.Settings) (*session.Session, []agent.Message, string, error) {
 	var sess *session.Session
 	var initial []agent.Message
 	var sessName string
 
-	if sessionPath == "" {
-		path, err := session.NewSessionPath(root)
+	if sessionId == "" {
+		path, err := session.NewSessionPath(settings.Session.Root)
 		if err != nil {
 			return nil, nil, "", fmt.Errorf("create session path: %w", err)
 		}
@@ -725,7 +686,8 @@ func loadSessionAndMessage(sessionPath string, root string) (*session.Session, [
 			return nil, nil, "", fmt.Errorf("create session: %w", err)
 		}
 	} else {
-		sess = session.Open(sessionPath)
+		path := filepath.Join(settings.Session.Root, sessionId+".jsonl")
+		sess = session.Open(path)
 		msgs, err := sess.LoadAll()
 		if err == nil && len(msgs) > 0 {
 			sessName = extractSessionName(msgs)
@@ -754,21 +716,82 @@ func sessionMessagesToAgent(msgs []session.Message) []agent.Message {
 	out := make([]agent.Message, 0, len(msgs))
 	for _, m := range msgs {
 		out = append(out, agent.Message{
-			ID:       m.ID,
-			Role:     keys.AgentMessageRole(m.Role),
-			Content:  m.Content,
-			Metadata: m.Metadata,
+			ID:         m.ID,
+			Role:       keys.AgentMessageRole(m.Role),
+			Content:    m.Content,
+			Thinking:   m.Thinking,
+			ToolCallID: m.ToolCallID,
+			IsError:    m.IsError,
+			Metadata:   m.Metadata,
 		})
 	}
 	return out
 }
 
+func renderHistoryFromMessages(msgs []agent.Message) []string {
+	if len(msgs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		lines := renderHistoryLinesFromMessage(m)
+		if len(lines) == 0 {
+			continue
+		}
+		out = append(out, lines...)
+	}
+	return out
+}
+
+func renderHistoryLinesFromMessage(m agent.Message) []string {
+	content := strings.TrimSpace(m.Content)
+	thinking := strings.TrimSpace(m.Thinking)
+
+	switch m.Role {
+	case keys.AgentRoleUser:
+		if content == "" {
+			return nil
+		}
+		return []string{"You: " + content}
+	case keys.AgentRoleAssistant:
+		lines := make([]string, 0, 2)
+		if thinking != "" {
+			lines = append(lines, "[Thinking] "+thinking)
+		}
+		if content != "" {
+			lines = append(lines, "Assistant: "+content)
+		}
+		return lines
+	case keys.AgentRoleTool:
+		if content == "" {
+			return nil
+		}
+		return []string{"Tool: " + content}
+	case keys.AgentRoleSystem:
+		if content == "" {
+			return nil
+		}
+		return []string{"System: " + content}
+	case keys.AgentRoleNotification:
+		// Hide technical session metadata notifications from default chat transcript.
+		return nil
+	default:
+		if content == "" {
+			return nil
+		}
+		return []string{string(m.Role) + ": " + content}
+	}
+}
+
 func agentMessageToSession(msg *agent.Message) session.Message {
 	return session.Message{
-		ID:        msg.ID,
-		Role:      string(msg.Role),
-		Content:   msg.Content,
-		CreatedAt: time.Now().UTC(),
-		Metadata:  msg.Metadata,
+		ID:         msg.ID,
+		Role:       string(msg.Role),
+		Content:    msg.Content,
+		Thinking:   msg.Thinking,
+		ToolCallID: msg.ToolCallID,
+		IsError:    msg.IsError,
+		CreatedAt:  time.Now().UTC(),
+		Metadata:   msg.Metadata,
 	}
 }

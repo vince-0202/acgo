@@ -11,8 +11,8 @@ import (
 
 const defaultSystemPrompt = "You are a helpful coding assistant."
 
-// LoadResult holds the merged system prompt and paths of files that were loaded.
-type LoadResult struct {
+// Status holds the merged system prompt and paths of files that were loaded.
+type Status struct {
 	Prompt string   // Final merged system prompt
 	Paths  []string // File paths that were read (for logging/debug)
 }
@@ -21,15 +21,12 @@ type LoadResult struct {
 // workDir is typically os.Getwd(); from workDir we walk upward to root.
 // Merge order: default → global ~/.acgo → project dirs (root … → workDir)
 // so that the directory closest to workDir wins for SYSTEM.md replacement.
-func Load(workDir string) LoadResult {
-	var prompt string = defaultSystemPrompt
+func Load(workDir string) *Status {
+	var prompt = defaultSystemPrompt
 	var paths []string
 
-	home, _ := os.UserHomeDir()
-	globalDir := filepath.Join(home, ".acgo")
-
 	// 1) Apply global directory
-	prompt, paths = applyDir(globalDir, prompt, paths)
+	prompt, paths = applyDir(workDir, prompt, paths)
 
 	// 2) Dirs from root toward workDir so workDir has highest priority
 	dirs := dirsFromRootToCwd(workDir)
@@ -37,7 +34,7 @@ func Load(workDir string) LoadResult {
 		prompt, paths = applyDir(d, prompt, paths)
 	}
 
-	return LoadResult{Prompt: strings.TrimSpace(prompt), Paths: paths}
+	return &Status{Prompt: strings.TrimSpace(prompt), Paths: paths}
 }
 
 // applyDir reads SYSTEM.md (replaces), AGENTS.md and APPEND_SYSTEM.md (append) from dir.

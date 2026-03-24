@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"acgo/pkg/contextfile"
 	"context"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 
 // Options configures an Agent instance.
 type Options struct {
+	WorkDir          string
 	InitialState     State
 	StreamFn         llm.StreamFunc
 	ConvertToLlm     func([]Message) []llm.Message
@@ -49,6 +52,10 @@ type Agent struct {
 	memoryWriter MemoryWriter
 }
 
+func (a *Agent) Id() string {
+	return a.id
+}
+
 // listenerSlot holds a listener and an id so Subscribe can return a working unsub.
 type listenerSlot struct {
 	id int
@@ -62,13 +69,8 @@ func New(id string, opts Options) *Agent {
 		state:        opts.InitialState,
 		memoryWriter: opts.MemoryWriter,
 	}
-	if opts.StreamFn != nil {
-		a.streamFn = opts.StreamFn
-	}
-	if a.streamFn == nil {
-		// default streamFn dispatches to the provider registered for the model.
-		a.streamFn = defaultStreamFn
-	}
+
+	a.streamFn = opts.StreamFn
 	if opts.ConvertToLlm != nil {
 		a.convertToLlm = opts.ConvertToLlm
 	} else {
@@ -79,6 +81,12 @@ func New(id string, opts Options) *Agent {
 	} else {
 		a.transformContext = defaultTransformContext
 	}
+
+	ctxResult := contextfile.Load(filepath.Join(opts.WorkDir, id))
+	a.state.ContextFile = ctxResult
+	a.state.SystemPrompt = ctxResult.Prompt
+	a.state.WorkDir = opts.WorkDir
+
 	return a
 }
 
@@ -121,6 +129,11 @@ func (a *Agent) emit(e Event) {
 // SetSystemPrompt updates the system prompt.
 func (a *Agent) SetSystemPrompt(prompt string) {
 	a.state.SystemPrompt = prompt
+}
+
+// SetContextFile updates the Context file index.
+func (a *Agent) SetContextFile(cf *contextfile.Status) {
+	a.state.ContextFile = cf
 }
 
 // SetModel updates the model.
@@ -505,21 +518,6 @@ func (a *Agent) Abort() {
 	}
 }
 
-// defaultStreamFn looks up the provider for the given model and calls its Stream function.
-func defaultStreamFn(callCtx llm.Context, model llm.Model, opts *llm.Options) (<-chan llm.Event, error) {
-	provider, ok := llm.GetProvider(model.Provider)
-	if !ok {
-		ch := make(chan llm.Event, 1)
-		ch <- llm.Event{
-			Type:  llm.EventError,
-			Error: llm.ErrUnknownProvider(model.Provider),
-		}
-		close(ch)
-		return ch, nil
-	}
-	return provider.Stream(callCtx, model, opts)
-}
-
 // upsertPendingToolCall tracks the latest version of a ToolCall by ID.
 // Stored Arguments are always normalized so they are non-nil and usable for execution.
 func (a *Agent) upsertPendingToolCall(call llm.ToolCall) {
@@ -627,11 +625,13 @@ func lastAssistantText(msgs []Message) string {
 
 // State AgentState holds the mutable state of an Agent instance.
 type State struct {
+	WorkDir       string
 	SystemPrompt  string
 	Model         llm.Model
 	ThinkingLevel keys.ThinkingLevel
 	Tools         []AgentTool
 	Messages      []Message
+	ContextFile   *contextfile.Status
 
 	IsStreaming      bool
 	StreamMessage    *Message

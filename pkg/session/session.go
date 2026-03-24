@@ -14,12 +14,15 @@ import (
 
 // Message is a single entry in a session log.
 type Message struct {
-	ID        string         `json:"id"`
-	ParentID  string         `json:"parent_id,omitempty"`
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
-	CreatedAt time.Time      `json:"created_at"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	ID         string         `json:"id"`
+	ParentID   string         `json:"parent_id,omitempty"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	Thinking   string         `json:"thinking,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	IsError    bool           `json:"is_error,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 // Session manages appending and reading messages from a JSONL file.

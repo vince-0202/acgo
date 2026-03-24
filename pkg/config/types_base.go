@@ -9,6 +9,7 @@ import (
 
 // Settings represents the merged configuration for acgo.
 type Settings struct {
+	WorkDir string
 	Log     Log           `mapstructure:"log"`
 	Agent   AgentSetting  `mapstructure:"agent"`
 	Session SessionConfig `mapstructure:"session"`
@@ -19,6 +20,14 @@ type Settings struct {
 type SessionConfig struct {
 	// Root is the directory for session JSONL files (default: ~/.acgo/sessions).
 	Root string `mapstructure:"root"`
+}
+
+func (s *SessionConfig) LoadAndInit(globalDir string) {
+	if s.Root == "" {
+		s.Root = filepath.Join(globalDir, "sessions")
+	} else if s.Root[0] == '~' {
+		s.Root = expandHome(s.Root)
+	}
 }
 
 func NewDefaultProviderSettingByProvider(providerType keys.ProviderType) *ProviderSetting {

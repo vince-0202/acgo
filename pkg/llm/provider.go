@@ -28,32 +28,3 @@ type Provider interface {
 	Complete(callCtx Context, model Model, opts *Options) (Message, Usage, error)
 	Models() []Model
 }
-
-// providerRegistry keeps track of all providers.
-var providerRegistry = make(map[string]Provider)
-
-// RegisterProvider registers a provider under its Name.
-func RegisterProvider(p Provider) {
-	if p == nil {
-		return
-	}
-	providerRegistry[p.Name()] = p
-	for _, m := range p.Models() {
-		RegisterModel(m)
-	}
-}
-
-// GetProvider retrieves a provider by name.
-func GetProvider(name string) (Provider, bool) {
-	p, ok := providerRegistry[name]
-	return p, ok
-}
-
-// ListProviders returns all registered providers.
-func ListProviders() []Provider {
-	out := make([]Provider, 0, len(providerRegistry))
-	for _, p := range providerRegistry {
-		out = append(out, p)
-	}
-	return out
-}

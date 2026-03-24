@@ -7,40 +7,66 @@ import (
 	"github.com/spf13/viper"
 )
 
-// LoadSettings loads global and project-level settings, merging them.
-func LoadSettings() (*Settings, error) {
+type SettingConfig struct {
+	DirectName string
+	Name       string
+}
+
+type SettingOption func(*SettingConfig)
+
+func WithDirectName(name string) SettingOption {
+	return func(config *SettingConfig) {
+		config.DirectName = name
+	}
+}
+
+func WithName(name string) SettingOption {
+	return func(config *SettingConfig) {
+		config.Name = name
+	}
+}
+
+func NewSettingConfig(options ...SettingOption) *SettingConfig {
+	settingConfig := &SettingConfig{
+		DirectName: ".acgo",
+		Name:       "settings",
+	}
+	if len(options) == 0 {
+		return settingConfig
+	}
+	for _, option := range options {
+		option(settingConfig)
+	}
+	return settingConfig
+}
+
+func LoadSettingsByConfig(config *SettingConfig) (*Settings, error) {
 	v := viper.New()
 
 	home, _ := os.UserHomeDir()
-	globalDir := filepath.Join(home, ".acgo")
+	globalDir := filepath.Join(home, config.DirectName)
 
 	v.SetConfigType("yaml")
-	v.SetDefault("default_provider", "openai")
-	v.SetDefault("api_keys", map[string]string{})
-	v.SetDefault("session.root", filepath.Join(globalDir, "sessions"))
 
-	v.SetConfigName("settings")
+	v.SetConfigName(config.Name)
 	v.AddConfigPath(globalDir)
 	_ = v.ReadInConfig() // ignore not found
-
-	// Project-level override: .acgo/settings.yaml
-	projectDir, _ := os.Getwd()
-	projectConfigDir := filepath.Join(projectDir, ".acgo")
-	v.AddConfigPath(projectConfigDir)
 	_ = v.MergeInConfig()
 
 	var s Settings
 	if err := v.Unmarshal(&s); err != nil {
 		return nil, err
 	}
-	if s.Session.Root == "" {
-		s.Session.Root = filepath.Join(globalDir, "sessions")
-	} else if s.Session.Root[0] == '~' {
-		s.Session.Root = expandHome(s.Session.Root)
-	}
+	s.WorkDir = globalDir
 
 	s.Log.LoadAndInit()
 	s.Agent.LoadAndInit()
+	s.Session.LoadAndInit(s.WorkDir)
 
 	return &s, nil
+}
+
+// LoadSettings loads global and project-level settings, merging them.
+func LoadSettings() (*Settings, error) {
+	return LoadSettingsByConfig(NewSettingConfig())
 }

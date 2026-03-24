@@ -1,5 +1,7 @@
 ### Pi Monorepo（`badlogic/pi-mono`）分析
 
+> acgo 的对齐路线图见 `docs/roadmap/global.md`（该路线图以本文档的分层对标为依据，拆成可落地的 checklist）。
+
 #### 总体概览
 
 **`pi-mono` 是一个围绕 “AI 编码代理（coding agent）” 打造的 TypeScript Monorepo**，核心目标是：
