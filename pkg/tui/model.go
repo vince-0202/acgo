@@ -101,7 +101,7 @@ type ModelOptions struct {
 // If opts.InitialMessages is set, the agent's history is replaced with them (e.g. after loading a session).
 func NewModel(opts *ModelOptions) (*Model, error) {
 
-	settings, err := bootstrap.Load()
+	settings, err := bootstrap.LoadAndRuntimeInit()
 	if err != nil {
 		return nil, err
 	}

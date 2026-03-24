@@ -18,7 +18,7 @@ var sessionListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List session files",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		settings, err := bootstrap.Load()
+		settings, err := bootstrap.LoadAndRuntimeInit()
 		if err != nil {
 			return err
 		}
