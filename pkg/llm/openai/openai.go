@@ -3,11 +3,12 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"github.com/vince-0202/acgo/pkg/config"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
 	"github.com/vince-0202/acgo/pkg/log"
-	"strings"
 
 	oai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -211,7 +212,7 @@ func (c *Client) buildChatCompletionNewParams(callCtx llm.Context, model llm.Mod
 	// For non-reasoning models this may be ignored by the backend.
 	if opts != nil || model.Reasoning != keys.ThinkingNone {
 		level := model.Reasoning
-		if opts != nil && opts.ReasoningEffort != keys.ThinkingNone {
+		if opts != nil && opts.ReasoningEffort != "" && opts.ReasoningEffort != keys.ThinkingNone {
 			level = opts.ReasoningEffort
 		}
 		params.ReasoningEffort = keys.MapReasoningEffort(level)
