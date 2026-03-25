@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"github.com/vince-0202/acgo/pkg/log"
 	"os"
 	"path/filepath"
 
@@ -55,6 +57,7 @@ func LoadSettingsByConfig(config *SettingConfig) (*Settings, error) {
 
 	var s Settings
 	if err := v.Unmarshal(&s); err != nil {
+		log.Errorf("unable to unmarshal settings %v", err)
 		return nil, err
 	}
 	s.WorkDir = globalDir
@@ -62,6 +65,12 @@ func LoadSettingsByConfig(config *SettingConfig) (*Settings, error) {
 	s.Log.LoadAndInit()
 	s.Agent.LoadAndInit()
 	s.Session.LoadAndInit(s.WorkDir)
+
+	marshal, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	log.Debugf("Settings loaded: %+v", string(marshal))
 
 	return &s, nil
 }

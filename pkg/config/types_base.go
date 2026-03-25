@@ -53,7 +53,7 @@ type ProviderSetting struct {
 	Provider keys.ProviderType `mapstructure:"provider"` // e.g. "openai"
 	BaseURL  string            `mapstructure:"base_url"`
 	ApiKey   string            `mapstructure:"api_key"` // env var name for API key, e.g. "OPENAI_API_KEY", "DEEPSEEK_API_KEY"
-	Models   []ModelSetting    `mapstructure:"Models"`
+	Models   []ModelSetting    `mapstructure:"models"`
 }
 
 func (s *ProviderSetting) Init() {
@@ -62,6 +62,9 @@ func (s *ProviderSetting) Init() {
 	}
 	if len(s.Models) == 0 {
 		s.Models = NewDefaultModelsByProvider(s.Provider)
+	}
+	for _, model := range s.Models {
+		model.Init()
 	}
 }
 
@@ -133,6 +136,24 @@ type ModelSetting struct {
 	MaxTokens     int                    `mapstructure:"max_tokens"`     // maximum generation tokens
 	Input         []keys.InputCapability `mapstructure:"input"`          // supported input modalities
 	Reasoning     keys.ThinkingLevel     `mapstructure:"reasoning"`      // reasoning capability level
+}
+
+func (s *ModelSetting) Init() {
+	if s.API == "" {
+		s.API = "chat-completions"
+	}
+	if s.ContextWindow == 0 {
+		s.ContextWindow = 128_000
+	}
+	if s.MaxTokens == 0 {
+		s.MaxTokens = 8_192
+	}
+	if s.Input == nil {
+		s.Input = []keys.InputCapability{keys.InputCapabilityText}
+	}
+	if s.Reasoning == "" {
+		s.Reasoning = keys.ThinkingLow
+	}
 }
 
 func NewDefaultModelsByProvider(providerType keys.ProviderType) []ModelSetting {

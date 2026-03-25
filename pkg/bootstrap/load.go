@@ -17,6 +17,7 @@ import (
 func LoadAndRuntimeInit(options ...config.SettingOption) (*config.Settings, error) {
 	settingConfig := config.NewSettingConfig(options...)
 	settings, err := config.LoadSettingsByConfig(settingConfig)
+
 	if err != nil {
 		return nil, err
 	}

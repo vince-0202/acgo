@@ -58,10 +58,8 @@ func (s *AgentSetting) LoadAndInit() {
 	for _, provider := range s.Providers {
 		provider.Init()
 	}
-
-	if s.DefaultModel == "" {
-		s.DefaultModel = s.Providers[0].Models[0].ID
-	}
+	//加载默认model配置
+	s.loadDefaultModel()
 	// Embedding 默认与 chat 一致，若未配置则用 default_provider 及其默认 embedding 模型
 	if s.DefaultEmbeddingProvider == "" {
 		s.DefaultEmbeddingProvider = s.DefaultProvider
@@ -74,6 +72,19 @@ func (s *AgentSetting) LoadAndInit() {
 				s.DefaultEmbeddingModel = p.Models[0].ID
 			}
 		}
+	}
+}
+
+func (s *AgentSetting) loadDefaultModel() {
+	if s.DefaultProvider != "" {
+		for _, p := range s.Providers {
+			if p.Provider == s.DefaultProvider {
+				s.DefaultModel = p.Models[0].ID
+			}
+		}
+	}
+	if s.DefaultModel == "" {
+		s.DefaultModel = s.Providers[0].Models[0].ID
 	}
 }
 
