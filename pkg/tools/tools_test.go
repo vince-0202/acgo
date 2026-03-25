@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 func TestEditTool_WriteAndReadBack(t *testing.T) {
@@ -53,11 +55,10 @@ func TestEditTool_WriteAndReadBack(t *testing.T) {
 func TestEditTool_InvalidArgs(t *testing.T) {
 	edit := NewEditTool()
 	ctx := context.Background()
-	_, err := edit.Execute(ctx, "call-1", []byte(`{}`), nil)
-	if err == nil {
-		t.Error("expected error for missing path")
+	if err := agent.ValidateToolArguments(edit.Name(), edit.JSONSchema(), []byte(`{}`)); err == nil {
+		t.Error("expected validation error for missing path")
 	}
-	_, err = edit.Execute(ctx, "call-2", []byte(`{"path":"/tmp/x","content":1}`), nil)
+	_, err := edit.Execute(ctx, "call-2", []byte(`{"path":"/tmp/x","content":1}`), nil)
 	if err == nil {
 		t.Error("expected error for invalid JSON")
 	}

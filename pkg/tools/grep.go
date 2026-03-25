@@ -29,6 +29,7 @@ func (t *grepTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"pattern": map[string]any{
 				"type":        "string",
+				"minLength":   1,
 				"description": "Regex pattern to search for (e.g. 'func main', 'import')",
 			},
 			"path": map[string]any{
@@ -52,9 +53,6 @@ func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-	if params.Pattern == "" {
-		return agent.ToolResult{}, fmt.Errorf("pattern is required")
 	}
 	root := params.Path
 	if root == "" {

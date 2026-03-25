@@ -23,6 +23,7 @@ func (t *readTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
+				"minLength":   1,
 				"description": "Absolute or relative path to the file to read",
 			},
 		},
@@ -35,16 +36,13 @@ func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		// Some models pass a raw string instead of {"path":"..."}; treat it as the path.
+		// Defense-in-depth if Execute is called without agent-side validation.
 		var raw string
 		if json.Unmarshal(args, &raw) == nil && raw != "" {
 			params.Path = raw
 		} else {
 			return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
 		}
-	}
-	if params.Path == "" {
-		return agent.ToolResult{}, fmt.Errorf("path is required")
 	}
 	data, err := os.ReadFile(params.Path)
 	if err != nil {

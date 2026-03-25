@@ -575,6 +575,7 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 		}
 
 		args := llm.NormalizeToolCallArguments(call.Arguments)
+		args = CoerceToolArguments(tool.JSONSchema(), args)
 		a.emit(Event{
 			Type:       EventToolExecutionStart,
 			AgentID:    a.id,
@@ -583,7 +584,15 @@ func (a *Agent) executePendingTools(ctx context.Context) {
 			ToolArgs:   args,
 		})
 
-		result, err := tool.Execute(ctx, call.ID, args, nil)
+		var result ToolResult
+		var err error
+		if vErr := ValidateToolArguments(tool.Name(), tool.JSONSchema(), args); vErr != nil {
+			// Validation failures are delivered as tool results with IsError so the model can retry.
+			result = ToolResult{Content: vErr.Error(), IsError: true}
+			err = vErr
+		} else {
+			result, err = tool.Execute(ctx, call.ID, args, nil)
+		}
 		if err != nil {
 			result = ToolResult{
 				Content: err.Error(),

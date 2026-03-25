@@ -23,6 +23,7 @@ func (t *bashTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"command": map[string]any{
 				"type":        "string",
+				"minLength":   1,
 				"description": "Shell command to execute (e.g. 'ls -la', 'pwd')",
 			},
 		},
@@ -35,16 +36,12 @@ func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 		Command string `json:"command"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		// Some models pass a raw string instead of {"command":"..."}; treat it as the command.
 		var raw string
 		if json.Unmarshal(args, &raw) == nil && raw != "" {
 			params.Command = raw
 		} else {
 			return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
 		}
-	}
-	if params.Command == "" {
-		return agent.ToolResult{}, fmt.Errorf("command is required")
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-lc", params.Command)

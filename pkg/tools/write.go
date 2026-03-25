@@ -23,6 +23,7 @@ func (t *writeTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
+				"minLength":   1,
 				"description": "Absolute or relative path to the file to write",
 			},
 			"content": map[string]any{
@@ -41,9 +42,6 @@ func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.Ra
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-	if params.Path == "" {
-		return agent.ToolResult{}, fmt.Errorf("path is required")
 	}
 	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil

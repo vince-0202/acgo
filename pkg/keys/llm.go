@@ -23,6 +23,7 @@ const (
 	ProviderTypeQwen      ProviderType = "qwen" // 阿里云百炼千问，OpenAI 兼容 API
 	ProviderTypeAnthropic              = "anthropic"
 	ProviderTypeGemini                 = "gemini"
+	ProviderTypeGLM                    = "glm" // 智谱 GLM，OpenAI 兼容 API
 )
 
 func GetAPIBaseURL(p ProviderType) ProviderApiBaseUrl {
@@ -37,6 +38,8 @@ func GetAPIBaseURL(p ProviderType) ProviderApiBaseUrl {
 		return AnthropicApiBaseUrl
 	case ProviderTypeGemini:
 		return GeminiApiBaseUrl
+	case ProviderTypeGLM:
+		return GLMApiBaseUrl
 	default:
 		return ""
 	}
@@ -57,6 +60,8 @@ const (
 	AnthropicApiBaseUrl ProviderApiBaseUrl = "https://api.anthropic.com/v1"
 	// GeminiApiBaseUrl is the native Gemini API host.
 	GeminiApiBaseUrl ProviderApiBaseUrl = "https://generativelanguage.googleapis.com"
+	// GLMApiBaseUrl is the default base URL for Zhipu GLM OpenAI-compatible API.
+	GLMApiBaseUrl ProviderApiBaseUrl = "https://open.bigmodel.cn/api/paas/v4"
 )
 
 func GetProviderTypeByAPIBaseURL(url string) ProviderType {
@@ -71,6 +76,8 @@ func GetProviderTypeByAPIBaseURL(url string) ProviderType {
 		return ProviderTypeAnthropic
 	case GeminiApiBaseUrl:
 		return ProviderTypeGemini
+	case GLMApiBaseUrl:
+		return ProviderTypeGLM
 	default:
 		return ProviderTypeUnknown
 	}

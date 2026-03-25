@@ -27,6 +27,7 @@ func (t *ragTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"query": map[string]any{
 				"type":        "string",
+				"minLength":   1,
 				"description": "Natural language query to search in the document index",
 			},
 			"top_k": map[string]any{
@@ -45,9 +46,6 @@ func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawM
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-	if params.Query == "" {
-		return agent.ToolResult{}, fmt.Errorf("query is required")
 	}
 	topK := int(params.TopK)
 	if topK <= 0 {

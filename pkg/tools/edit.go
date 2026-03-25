@@ -23,6 +23,7 @@ func (t *editTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
+				"minLength":   1,
 				"description": "Path to the file to edit",
 			},
 			"content": map[string]any{
@@ -46,9 +47,6 @@ func (t *editTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-	if params.Path == "" {
-		return agent.ToolResult{}, fmt.Errorf("path is required")
 	}
 	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil

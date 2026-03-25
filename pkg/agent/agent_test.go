@@ -14,6 +14,7 @@ import (
 type recordingTool struct {
 	name         string
 	receivedArgs json.RawMessage
+	schema       map[string]any // if set, used instead of the default read-file schema
 }
 
 func (t *recordingTool) Name() string {
@@ -27,6 +28,9 @@ func (t *recordingTool) Description() string {
 	return "Read contents of a file"
 }
 func (t *recordingTool) JSONSchema() map[string]any {
+	if t.schema != nil {
+		return t.schema
+	}
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -93,7 +97,14 @@ func TestExecutePendingTools_NormalizesDoubleEncodedArguments(t *testing.T) {
 }
 
 func TestExecutePendingTools_EmptyArgumentsBecomeEmptyObject(t *testing.T) {
-	rec := &recordingTool{name: "write"}
+	// Schema allows {} so we exercise Normalize + Coerce + Validate and still call Execute.
+	rec := &recordingTool{
+		name: "write",
+		schema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	}
 	callCount := 0
 
 	mockStream := func(_ llm.Context, _ llm.Model, _ *llm.Options) (<-chan llm.Event, error) {

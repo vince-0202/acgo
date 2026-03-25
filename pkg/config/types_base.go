@@ -42,6 +42,8 @@ func NewDefaultProviderSettingByProvider(providerType keys.ProviderType) *Provid
 		return newDefaultAnthropicProviderSetting()
 	case keys.ProviderTypeGemini:
 		return newDefaultGeminiProviderSetting()
+	case keys.ProviderTypeGLM:
+		return newDefaultGLMProviderSetting()
 	default:
 		panic("invalid Provider type")
 	}
@@ -113,6 +115,16 @@ func newDefaultGeminiProviderSetting() *ProviderSetting {
 	}
 }
 
+func newDefaultGLMProviderSetting() *ProviderSetting {
+	var glm keys.ProviderType = keys.ProviderTypeGLM
+	return &ProviderSetting{
+		Provider: glm,
+		BaseURL:  string(keys.GetAPIBaseURL(glm)),
+		ApiKey:   "GLM_API_KEY",
+		Models:   NewDefaultModelsByProvider(glm),
+	}
+}
+
 type ModelSetting struct {
 	ID            string                 `mapstructure:"id"`             // unique identifier within Provider
 	Name          string                 `mapstructure:"name"`           // human readable name
@@ -135,6 +147,8 @@ func NewDefaultModelsByProvider(providerType keys.ProviderType) []ModelSetting {
 		return DefaultAnthropicModels()
 	case keys.ProviderTypeGemini:
 		return DefaultGeminiModels()
+	case keys.ProviderTypeGLM:
+		return DefaultGLMModels()
 	}
 	panic("unknown Provider type")
 }
@@ -247,6 +261,21 @@ func DefaultGeminiModels() []ModelSetting {
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
 			Reasoning:     keys.ThinkingMedium,
+		},
+	}
+}
+
+// DefaultGLMModels returns the default GLM model list.
+func DefaultGLMModels() []ModelSetting {
+	return []ModelSetting{
+		{
+			ID:            "glm-4-flash",
+			Name:          "GLM-4-Flash",
+			API:           "chat-completions",
+			ContextWindow: 128_000,
+			MaxTokens:     8_192,
+			Input:         []keys.InputCapability{keys.InputCapabilityText},
+			Reasoning:     keys.ThinkingLow,
 		},
 	}
 }

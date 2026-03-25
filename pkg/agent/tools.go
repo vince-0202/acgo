@@ -23,6 +23,21 @@ type ToolResult struct {
 	Metadata map[string]any // optional metadata
 }
 
+// Tool execution and argument conventions:
+//
+// 1) JSON Schema: each tool must return a Draft-7 style object schema from JSONSchema().
+// The agent runs CoerceToolArguments (bare string → single required string field when applicable),
+// then ValidateToolArguments (gojsonschema) before Execute.
+//
+// 2) Validation failure: the agent does not call Execute; it appends a tool message with
+// IsError=true and Content describing the schema errors (see ToolValidationError).
+//
+// 3) Return values from Execute:
+//   - Operational failure the model should see (bad path, non-zero exit, etc.): return
+//     (ToolResult{Content: "...", IsError: true}, nil). Do not use non-nil error for these.
+//   - Programming or contract violation inside the tool: return (zero ToolResult, err);
+//     the agent wraps err into an IsError tool result for the model.
+
 // AgentTool is the interface implemented by all tools usable by the Agent.
 type AgentTool interface {
 	Name() string

@@ -41,7 +41,7 @@
 - [x] **steering / follow-up 队列**：忙时可打断/追加，turn 结束后按优先级消费。
 - [x] **Context 裁剪（TransformContext）**：基础 token/轮次裁剪策略 + 扩展点。
 - [x] **错误模型统一**：LLM/工具/上下文/取消（abort）分类，并在事件中暴露给 UI。
-- [ ] **事件粒度与对齐**（便于未来 Web/RPC/录制回放）：
+- [ ] **jj与对齐**（便于未来 Web/RPC/录制回放）：
   - [ ] 明确并稳定：agent_start/end、turn_start/end、message_start/update/end、tool_execution_* 的事件字段与顺序。
   - [ ] 为 tool execution 增加可选的流式 onUpdate（长耗时工具实时输出）。
 - [ ] **会话一致性约束**：
@@ -53,9 +53,9 @@
 - [x] **read / write / bash**：schema/错误处理梳理并注入默认 Agent。
 - [x] **edit 工具**：增量编辑能力 + 集成测试。
 - [x] **grep / find / ls**：项目浏览与检索工具，返回行号与片段，便于模型定位代码。
-- [ ] **工具参数校验标准化**：
-  - [ ] 为所有工具统一 JSON schema 校验与错误回传格式（对标 `pi-ai` 的 AJV 校验思路）。
-  - [ ] 明确“工具失败抛错 vs 返回 isError toolResult”的约定与最佳实践。
+- [x] **工具参数校验标准化**：
+  - [x] 为所有工具统一 JSON schema 校验与错误回传格式（对标 `pi-ai` 的 AJV 校验思路）。
+  - [x] 明确“工具失败抛错 vs 返回 isError toolResult”的约定与最佳实践。
 
 ### P0.4 Session 持久化（对标 `pi` 的 JSONL 会话树）
 

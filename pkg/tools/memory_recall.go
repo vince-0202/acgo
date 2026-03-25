@@ -26,6 +26,7 @@ func (t *memoryRecallTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"query": map[string]any{
 				"type":        "string",
+				"minLength":   1,
 				"description": "Natural language query to search in long-term memories",
 			},
 			"memory_types": map[string]any{
@@ -52,9 +53,6 @@ func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args 
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-	if strings.TrimSpace(params.Query) == "" {
-		return agent.ToolResult{}, fmt.Errorf("query is required")
 	}
 	topK := int(params.TopK)
 	if topK <= 0 {
