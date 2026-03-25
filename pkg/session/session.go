@@ -27,7 +27,8 @@ type Message struct {
 
 // Session manages appending and reading messages from a JSONL file.
 type Session struct {
-	Path string
+	Path    string
+	Message []Message
 }
 
 // Create creates a new session file at path (overwriting if it exists).
@@ -58,11 +59,11 @@ func (s *Session) AppendMessage(msg Message) error {
 	return nil
 }
 
-// LoadAll reads all messages from the session file.
-func (s *Session) LoadAll() ([]Message, error) {
+// LoadMessage reads all messages from the session file.
+func (s *Session) LoadMessage() error {
 	f, err := os.Open(s.Path)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	defer f.Close()
 
@@ -76,9 +77,10 @@ func (s *Session) LoadAll() ([]Message, error) {
 		result = append(result, msg)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	return result, nil
+	s.Message = result
+	return nil
 }
 
 // NewSessionPath returns a new session file path under root with format <snowflake_id>.jsonl.

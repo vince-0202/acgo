@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const defaultSystemPrompt = "You are a helpful coding assistant."
+const defaultSystemPrompt = "You are a helpful coding assistant.Your answer needs to be accurate and concise."
 
 // Status holds the merged system prompt and paths of files that were loaded.
 type Status struct {

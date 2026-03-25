@@ -6,7 +6,6 @@ import (
 	"github.com/vince-0202/acgo/pkg/bootstrap"
 	"github.com/vince-0202/acgo/pkg/utils"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -33,7 +32,6 @@ type Model struct {
 	agent             *agent.Agent
 	session           *session.Session
 	sessionRoot       string
-	sessionName       string
 	textarea          textarea.Model
 	history           []string
 	streamingContent  string
@@ -101,29 +99,19 @@ func newProviderBySettings(settings config.AgentSetting) []llm.Provider {
 
 // ModelOptions configures NewModel (session and optional initial messages).
 type ModelOptions struct {
-	Session         *session.Session
-	InitialMessages []agent.Message
-	SessionName     string
+	Settings *config.Settings
+	Session  *session.Session
 }
 
 // NewModel constructs a minimal chat TUI model wired to the Agent.
 // If opts.InitialMessages is set, the agent's history is replaced with them (e.g. after loading a session).
 func NewModel(opts *ModelOptions) (*Model, error) {
 
-	settings, err := bootstrap.LoadAndRuntimeInit()
-	if err != nil {
-		return nil, err
-	}
-
 	ag := bootstrap.BuildAgent(
-		settings,
+		opts.Settings,
 		bootstrap.WithId("tui-"+utils.NextID(keys.IdKindSnowflake)),
 		bootstrap.WithDefaultTools(),
 	)
-
-	if opts != nil && len(opts.InitialMessages) > 0 {
-		ag.ReplaceMessages(opts.InitialMessages)
-	}
 
 	model := &Model{
 		agent:        ag,
@@ -133,20 +121,16 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		height:       24,
 		commands:     map[string]commandSpec{},
 		commandSpecs: nil,
-		workDir:      settings.WorkDir,
+		workDir:      opts.Settings.WorkDir,
 	}
-	if opts != nil {
-		model.session = opts.Session
-		model.sessionName = strings.TrimSpace(opts.SessionName)
-		model.history = append(model.history, renderHistoryFromMessages(opts.InitialMessages)...)
+
+	model.session = opts.Session
+	model.sessionRoot = opts.Settings.Session.Root
+	if len(opts.Session.Message) > 0 {
+		oldMessage := bootstrap.SessionMessagesToAgentMessage(opts.Session.Message)
+		ag.ReplaceMessages(oldMessage)
+		model.history = append(model.history, renderHistoryFromMessages(oldMessage)...)
 	}
-	// sessionRoot is used by /new even when a session is already open.
-	root := settings.Session.Root
-	if root == "" {
-		home, _ := os.UserHomeDir()
-		root = home + "/.acgo/sessions"
-	}
-	model.sessionRoot = root
 
 	model.registerBuiltinCommands()
 	return model, nil
@@ -163,11 +147,6 @@ func newInputTA() textarea.Model {
 
 func (m Model) Init() tea.Cmd {
 	return textarea.Blink
-}
-
-type assistantReplyMsg struct {
-	text string
-	err  error
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -436,9 +415,7 @@ func (m *Model) statusLine() string {
 	if m.session != nil && m.session.Path != "" {
 		status = "Session: " + m.session.Path + " | " + status
 	}
-	if strings.TrimSpace(m.sessionName) != "" {
-		status = "Name: " + strings.TrimSpace(m.sessionName) + " | " + status
-	}
+
 	return status
 }
 
@@ -661,49 +638,24 @@ func formatToolExecutionEndLines(toolName string, toolCallID string, args []byte
 // Run launches the TUI. If sessionPath is empty, a new session file is created under config session root.
 // If sessionPath is set, that file is opened and messages are loaded into the agent.
 func Run(sessionId string) error {
-	settings, err := config.LoadSettings()
+
+	settings, err := bootstrap.LoadAndRuntimeInit()
 	if err != nil {
 		return err
 	}
 
-	sess, initial, sessName, err := loadSessionAndMessage(sessionId, settings)
+	sess, err := bootstrap.LoadSession(sessionId, settings.Session)
 	if err != nil {
 		return err
 	}
 
-	model, err := NewModel(&ModelOptions{Session: sess, InitialMessages: initial, SessionName: sessName})
+	model, err := NewModel(&ModelOptions{Settings: settings, Session: sess})
 	if err != nil {
 		return err
 	}
 
 	_, err = tea.NewProgram(model, tea.WithOutput(os.Stdout)).Run()
 	return err
-}
-
-func loadSessionAndMessage(sessionId string, settings *config.Settings) (*session.Session, []agent.Message, string, error) {
-	var sess *session.Session
-	var initial []agent.Message
-	var sessName string
-
-	if sessionId == "" {
-		path, err := session.NewSessionPath(settings.Session.Root)
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("create session path: %w", err)
-		}
-		sess, err = session.Create(path)
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("create session: %w", err)
-		}
-	} else {
-		path := filepath.Join(settings.Session.Root, sessionId+".jsonl")
-		sess = session.Open(path)
-		msgs, err := sess.LoadAll()
-		if err == nil && len(msgs) > 0 {
-			sessName = extractSessionName(msgs)
-			initial = sessionMessagesToAgent(msgs)
-		}
-	}
-	return sess, initial, sessName, nil
 }
 
 func extractSessionName(msgs []session.Message) string {
@@ -719,22 +671,6 @@ func extractSessionName(msgs []session.Message) string {
 		}
 	}
 	return ""
-}
-
-func sessionMessagesToAgent(msgs []session.Message) []agent.Message {
-	out := make([]agent.Message, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, agent.Message{
-			ID:         m.ID,
-			Role:       keys.AgentMessageRole(m.Role),
-			Content:    m.Content,
-			Thinking:   m.Thinking,
-			ToolCallID: m.ToolCallID,
-			IsError:    m.IsError,
-			Metadata:   m.Metadata,
-		})
-	}
-	return out
 }
 
 func renderHistoryFromMessages(msgs []agent.Message) []string {

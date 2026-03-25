@@ -63,9 +63,12 @@ func (s *ProviderSetting) Init() {
 	if len(s.Models) == 0 {
 		s.Models = NewDefaultModelsByProvider(s.Provider)
 	}
+	initModelSetting := make([]ModelSetting, 0, len(s.Models))
 	for _, model := range s.Models {
 		model.Init()
+		initModelSetting = append(initModelSetting, model)
 	}
+	s.Models = initModelSetting
 }
 
 func newDefaultOpenaiProviderSetting() *ProviderSetting {
@@ -130,8 +133,6 @@ func newDefaultGLMProviderSetting() *ProviderSetting {
 
 type ModelSetting struct {
 	ID            string                 `mapstructure:"id"`             // unique identifier within Provider
-	Name          string                 `mapstructure:"name"`           // human readable name
-	API           string                 `mapstructure:"api"`            // underlying API family (e.g. openai-chat, openai-responses)
 	ContextWindow int                    `mapstructure:"context_window"` // approximate context window in tokens
 	MaxTokens     int                    `mapstructure:"max_tokens"`     // maximum generation tokens
 	Input         []keys.InputCapability `mapstructure:"input"`          // supported input modalities
@@ -139,9 +140,6 @@ type ModelSetting struct {
 }
 
 func (s *ModelSetting) Init() {
-	if s.API == "" {
-		s.API = "chat-completions"
-	}
 	if s.ContextWindow == 0 {
 		s.ContextWindow = 128_000
 	}
@@ -178,8 +176,6 @@ func defaultOpenAIModels() []ModelSetting {
 	return []ModelSetting{
 		{
 			ID:            "gpt-4o-mini",
-			Name:          "GPT-4o Mini",
-			API:           "chat-completions",
 			ContextWindow: 128_000,
 			MaxTokens:     16_000,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -193,8 +189,6 @@ func DefaultDeepSeekModels() []ModelSetting {
 	return []ModelSetting{
 		{
 			ID:            "deepseek-reasoner",
-			Name:          "ProviderTypeDeepSeek Reasoner",
-			API:           "chat-completions",
 			ContextWindow: 64_000,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -202,8 +196,6 @@ func DefaultDeepSeekModels() []ModelSetting {
 		},
 		{
 			ID:            "deepseek-chat",
-			Name:          "ProviderTypeDeepSeek Chat",
-			API:           "chat-completions",
 			ContextWindow: 64_000,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -218,8 +210,6 @@ func DefaultQwenModels() []ModelSetting {
 	return []ModelSetting{
 		{
 			ID:            "qwen-plus",
-			Name:          "千问 Plus",
-			API:           "chat-completions",
 			ContextWindow: 128_000,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -227,8 +217,6 @@ func DefaultQwenModels() []ModelSetting {
 		},
 		{
 			ID:            "qwen-turbo",
-			Name:          "千问 Turbo",
-			API:           "chat-completions",
 			ContextWindow: 128_000,
 			MaxTokens:     6_000,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -236,8 +224,6 @@ func DefaultQwenModels() []ModelSetting {
 		},
 		{
 			ID:            "qwen-max",
-			Name:          "千问 Max",
-			API:           "chat-completions",
 			ContextWindow: 32_768,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -246,8 +232,6 @@ func DefaultQwenModels() []ModelSetting {
 		// Embedding 模型，便于在配置中直接选择 text-embedding-v3 作为 default_embedding_model。
 		{
 			ID:            keys.DefaultQwenEmbeddingModel,
-			Name:          "千问 Text Embedding v3",
-			API:           "embeddings",
 			ContextWindow: 8_192,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -261,8 +245,6 @@ func DefaultAnthropicModels() []ModelSetting {
 	return []ModelSetting{
 		{
 			ID:            "claude-3-5-sonnet-latest",
-			Name:          "Claude 3.5 Sonnet (Latest)",
-			API:           "chat-completions",
 			ContextWindow: 200_000,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -276,8 +258,6 @@ func DefaultGeminiModels() []ModelSetting {
 	return []ModelSetting{
 		{
 			ID:            "gemini-2.5-flash",
-			Name:          "Gemini 2.5 Flash",
-			API:           "chat-completions",
 			ContextWindow: 1_000_000,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
@@ -291,8 +271,6 @@ func DefaultGLMModels() []ModelSetting {
 	return []ModelSetting{
 		{
 			ID:            "glm-4-flash",
-			Name:          "GLM-4-Flash",
-			API:           "chat-completions",
 			ContextWindow: 128_000,
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},

@@ -49,11 +49,11 @@ func TestCreate_AppendMessage_LoadAll(t *testing.T) {
 	if err := s.AppendMessage(Message{ID: "1", Role: "user", Content: "hi"}); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	all, err := s.LoadAll()
+	all, err := s.LoadMessage()
 	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
+		t.Fatalf("LoadMessage: %v", err)
 	}
 	if len(all) != 1 || all[0].Content != "hi" {
-		t.Errorf("LoadAll: %v", all)
+		t.Errorf("LoadMessage: %v", all)
 	}
 }

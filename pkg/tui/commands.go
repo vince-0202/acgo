@@ -116,7 +116,6 @@ func (m *Model) registerBuiltinCommands() {
 				return "create session: " + err.Error(), false
 			}
 			m.session = sess
-			m.sessionName = ""
 			m.agent.Reset()
 			m.err = nil
 			m.history = nil
@@ -135,7 +134,6 @@ func (m *Model) registerBuiltinCommands() {
 			if title == "" {
 				return "usage: /name <title>", false
 			}
-			m.sessionName = title
 			if m.session != nil && m.session.Path != "" {
 				_ = m.session.AppendMessage(session.Message{
 					ID:        "name-" + time.Now().UTC().Format(time.RFC3339Nano),
