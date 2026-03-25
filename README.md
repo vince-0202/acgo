@@ -17,11 +17,13 @@
 在 `${HOME}/.acgo/` 目录下创建 `settings.yaml`文件。
 ```yaml
 agent:
- default_provider: deepseek
- default_model: deepseek-reasoner
+ default_provider: gemini
+ default_model: gemini-2.5-flash
  providers:
-    - provider: deepseek
-      api_key: xxxx
+    - provider: gemini
+      api_key: ${GEMINI_API_KEY}
+    - provider: anthropic
+      api_key: ${ANTHROPIC_API_KEY}
 log:
  level: debug
 ```

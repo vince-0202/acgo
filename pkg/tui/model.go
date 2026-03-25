@@ -18,7 +18,9 @@ import (
 	"github.com/vince-0202/acgo/pkg/config"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
+	"github.com/vince-0202/acgo/pkg/llm/anthropic"
 	"github.com/vince-0202/acgo/pkg/llm/deepseek"
+	"github.com/vince-0202/acgo/pkg/llm/gemini"
 	"github.com/vince-0202/acgo/pkg/llm/openai"
 	"github.com/vince-0202/acgo/pkg/llm/qwen"
 	"github.com/vince-0202/acgo/pkg/log"
@@ -83,6 +85,10 @@ func newProviderBySettings(settings config.AgentSetting) []llm.Provider {
 			providers = append(providers, deepseek.NewClient(providerSetting))
 		case keys.ProviderTypeQwen:
 			providers = append(providers, qwen.NewClient(providerSetting))
+		case keys.ProviderTypeAnthropic:
+			providers = append(providers, anthropic.NewClient(providerSetting))
+		case keys.ProviderTypeGemini:
+			providers = append(providers, gemini.NewClient(providerSetting))
 		default:
 			continue
 		}

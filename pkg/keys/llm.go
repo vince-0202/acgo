@@ -17,10 +17,12 @@ const (
 type ProviderType string
 
 const (
-	ProviderTypeUnknown  ProviderType = "unknown"
-	ProviderTypeOpenAi                = "openai"
-	ProviderTypeDeepSeek              = "deepseek"
-	ProviderTypeQwen     ProviderType = "qwen" // 阿里云百炼千问，OpenAI 兼容 API
+	ProviderTypeUnknown   ProviderType = "unknown"
+	ProviderTypeOpenAi                 = "openai"
+	ProviderTypeDeepSeek               = "deepseek"
+	ProviderTypeQwen      ProviderType = "qwen" // 阿里云百炼千问，OpenAI 兼容 API
+	ProviderTypeAnthropic              = "anthropic"
+	ProviderTypeGemini                 = "gemini"
 )
 
 func GetAPIBaseURL(p ProviderType) ProviderApiBaseUrl {
@@ -31,6 +33,10 @@ func GetAPIBaseURL(p ProviderType) ProviderApiBaseUrl {
 		return DeepSeekApiBaseUrl
 	case ProviderTypeQwen:
 		return QwenApiBaseUrl
+	case ProviderTypeAnthropic:
+		return AnthropicApiBaseUrl
+	case ProviderTypeGemini:
+		return GeminiApiBaseUrl
 	default:
 		return ""
 	}
@@ -47,6 +53,10 @@ const (
 	// 其他地域: 新加坡 https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 	// 美国弗吉尼亚: https://dashscope-us.aliyuncs.com/compatible-mode/v1
 	QwenApiBaseUrl ProviderApiBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	// AnthropicApiBaseUrl is the default Anthropic API root.
+	AnthropicApiBaseUrl ProviderApiBaseUrl = "https://api.anthropic.com/v1"
+	// GeminiApiBaseUrl is the native Gemini API host.
+	GeminiApiBaseUrl ProviderApiBaseUrl = "https://generativelanguage.googleapis.com"
 )
 
 func GetProviderTypeByAPIBaseURL(url string) ProviderType {
@@ -57,6 +67,10 @@ func GetProviderTypeByAPIBaseURL(url string) ProviderType {
 		return ProviderTypeDeepSeek
 	case QwenApiBaseUrl:
 		return ProviderTypeQwen
+	case AnthropicApiBaseUrl:
+		return ProviderTypeAnthropic
+	case GeminiApiBaseUrl:
+		return ProviderTypeGemini
 	default:
 		return ProviderTypeUnknown
 	}

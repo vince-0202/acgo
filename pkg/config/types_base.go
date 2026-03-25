@@ -38,6 +38,10 @@ func NewDefaultProviderSettingByProvider(providerType keys.ProviderType) *Provid
 		return newDefaultDeepseekProviderSetting()
 	case keys.ProviderTypeQwen:
 		return newDefaultQwenProviderSetting()
+	case keys.ProviderTypeAnthropic:
+		return newDefaultAnthropicProviderSetting()
+	case keys.ProviderTypeGemini:
+		return newDefaultGeminiProviderSetting()
 	default:
 		panic("invalid Provider type")
 	}
@@ -89,6 +93,26 @@ func newDefaultQwenProviderSetting() *ProviderSetting {
 	}
 }
 
+func newDefaultAnthropicProviderSetting() *ProviderSetting {
+	var anthropic keys.ProviderType = keys.ProviderTypeAnthropic
+	return &ProviderSetting{
+		Provider: anthropic,
+		BaseURL:  string(keys.GetAPIBaseURL(anthropic)),
+		ApiKey:   "ANTHROPIC_API_KEY",
+		Models:   NewDefaultModelsByProvider(anthropic),
+	}
+}
+
+func newDefaultGeminiProviderSetting() *ProviderSetting {
+	var gemini keys.ProviderType = keys.ProviderTypeGemini
+	return &ProviderSetting{
+		Provider: gemini,
+		BaseURL:  string(keys.GetAPIBaseURL(gemini)),
+		ApiKey:   "GEMINI_API_KEY",
+		Models:   NewDefaultModelsByProvider(gemini),
+	}
+}
+
 type ModelSetting struct {
 	ID            string                 `mapstructure:"id"`             // unique identifier within Provider
 	Name          string                 `mapstructure:"name"`           // human readable name
@@ -107,6 +131,10 @@ func NewDefaultModelsByProvider(providerType keys.ProviderType) []ModelSetting {
 		return DefaultDeepSeekModels()
 	case keys.ProviderTypeQwen:
 		return DefaultQwenModels()
+	case keys.ProviderTypeAnthropic:
+		return DefaultAnthropicModels()
+	case keys.ProviderTypeGemini:
+		return DefaultGeminiModels()
 	}
 	panic("unknown Provider type")
 }
@@ -189,6 +217,36 @@ func DefaultQwenModels() []ModelSetting {
 			MaxTokens:     8_192,
 			Input:         []keys.InputCapability{keys.InputCapabilityText},
 			Reasoning:     keys.ThinkingNone,
+		},
+	}
+}
+
+// DefaultAnthropicModels returns the default Anthropic model list.
+func DefaultAnthropicModels() []ModelSetting {
+	return []ModelSetting{
+		{
+			ID:            "claude-3-5-sonnet-latest",
+			Name:          "Claude 3.5 Sonnet (Latest)",
+			API:           "chat-completions",
+			ContextWindow: 200_000,
+			MaxTokens:     8_192,
+			Input:         []keys.InputCapability{keys.InputCapabilityText},
+			Reasoning:     keys.ThinkingHigh,
+		},
+	}
+}
+
+// DefaultGeminiModels returns the default Gemini model list.
+func DefaultGeminiModels() []ModelSetting {
+	return []ModelSetting{
+		{
+			ID:            "gemini-2.5-flash",
+			Name:          "Gemini 2.5 Flash",
+			API:           "chat-completions",
+			ContextWindow: 1_000_000,
+			MaxTokens:     8_192,
+			Input:         []keys.InputCapability{keys.InputCapabilityText},
+			Reasoning:     keys.ThinkingMedium,
 		},
 	}
 }
