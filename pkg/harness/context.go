@@ -43,49 +43,6 @@ func (cc *ContextController) Load() {
 	}
 }
 
-// applyDir reads SYSTEM.md (replaces), AGENTS.md and APPEND_SYSTEM.md (append) from dir.
-func (cc *ContextController) applyDir(dir string) {
-	// SYSTEM.md: replace
-	if b, p := readFile(dir, "SYSTEM.md"); b != "" {
-		cc.Prompt = strings.TrimSpace(b)
-		cc.Paths = append(cc.Paths, p)
-	}
-	// AGENTS.md: append
-	if b, p := readFile(dir, "AGENTS.md"); b != "" {
-		cc.Prompt = cc.Prompt + "\n\n" + strings.TrimSpace(b)
-		cc.Paths = append(cc.Paths, p)
-	}
-	// APPEND_SYSTEM.md: append
-	if b, p := readFile(dir, "APPEND_SYSTEM.md"); b != "" {
-		cc.Prompt = cc.Prompt + "\n\n" + strings.TrimSpace(b)
-		cc.Paths = append(cc.Paths, p)
-	}
-}
-
-// dirsFromRootToCwd returns directories from filesystem root toward workDir
-// (e.g. ["/", "/home", "/home/user", "/home/user/proj"] so workDir wins when we apply in order).
-func (cc *ContextController) dirsFromRootToCwd(workDir string) []string {
-	abs, err := filepath.Abs(workDir)
-	if err != nil || abs == "" {
-		return nil
-	}
-	abs = filepath.Clean(abs)
-	var parts []string
-	for {
-		parts = append(parts, abs)
-		parent := filepath.Dir(abs)
-		if parent == abs {
-			break
-		}
-		abs = parent
-	}
-	// parts is [workDir, parent, ..., root]; reverse to get root ... workDir
-	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
-		parts[i], parts[j] = parts[j], parts[i]
-	}
-	return parts
-}
-
 // TrimMessage applies the trimming strategy defined by opts.
 func (cc *ContextController) TrimMessage() {
 	//todo:
@@ -144,4 +101,47 @@ func readFile(dir, name string) (content string, path string) {
 		return "", ""
 	}
 	return string(b), path
+}
+
+// applyDir reads SYSTEM.md (replaces), AGENTS.md and APPEND_SYSTEM.md (append) from dir.
+func (cc *ContextController) applyDir(dir string) {
+	// SYSTEM.md: replace
+	if b, p := readFile(dir, "SYSTEM.md"); b != "" {
+		cc.Prompt = strings.TrimSpace(b)
+		cc.Paths = append(cc.Paths, p)
+	}
+	// AGENTS.md: append
+	if b, p := readFile(dir, "AGENTS.md"); b != "" {
+		cc.Prompt = cc.Prompt + "\n\n" + strings.TrimSpace(b)
+		cc.Paths = append(cc.Paths, p)
+	}
+	// APPEND_SYSTEM.md: append
+	if b, p := readFile(dir, "APPEND_SYSTEM.md"); b != "" {
+		cc.Prompt = cc.Prompt + "\n\n" + strings.TrimSpace(b)
+		cc.Paths = append(cc.Paths, p)
+	}
+}
+
+// dirsFromRootToCwd returns directories from filesystem root toward workDir
+// (e.g. ["/", "/home", "/home/user", "/home/user/proj"] so workDir wins when we apply in order).
+func (cc *ContextController) dirsFromRootToCwd(workDir string) []string {
+	abs, err := filepath.Abs(workDir)
+	if err != nil || abs == "" {
+		return nil
+	}
+	abs = filepath.Clean(abs)
+	var parts []string
+	for {
+		parts = append(parts, abs)
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			break
+		}
+		abs = parent
+	}
+	// parts is [workDir, parent, ..., root]; reverse to get root ... workDir
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return parts
 }

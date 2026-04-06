@@ -33,7 +33,7 @@ type MemoryWriter interface {
 // Agent coordinates LLM calls, tools and state updates.
 type Agent struct {
 	id string
-
+	//all controllers
 	contextController *harness.ContextController
 	memoryController  *harness.MemoryController
 	toolController    *harness.ToolController
@@ -42,9 +42,7 @@ type Agent struct {
 	Provider llm.Provider
 	state    State
 
-	listenersMu    sync.RWMutex
-	listeners      []listenerSlot
-	nextListenerID int
+	listenerManager listenerManager
 
 	queueMu       sync.Mutex // protects SteeringQueue and FollowUpQueue
 	memoryWriter  MemoryWriter
@@ -53,12 +51,6 @@ type Agent struct {
 
 func (a *Agent) Id() string {
 	return a.id
-}
-
-// listenerSlot holds a listener and an id so Subscribe can return a working unsub.
-type listenerSlot struct {
-	id int
-	l  communi.Listener
 }
 
 // New creates a new Agent with the given options.
@@ -92,33 +84,11 @@ func (a *Agent) State() State {
 
 // Subscribe registers a listener for events. It returns an unsubscribe function.
 func (a *Agent) Subscribe(l communi.Listener) func() {
-	a.listenersMu.Lock()
-	defer a.listenersMu.Unlock()
-	id := a.nextListenerID
-	a.nextListenerID++
-	a.listeners = append(a.listeners, listenerSlot{id: id, l: l})
-	return func() {
-		a.listenersMu.Lock()
-		defer a.listenersMu.Unlock()
-		for i := range a.listeners {
-			if a.listeners[i].id == id {
-				last := len(a.listeners) - 1
-				if i != last {
-					a.listeners[i] = a.listeners[last]
-				}
-				a.listeners = a.listeners[:last]
-				return
-			}
-		}
-	}
+	return a.listenerManager.AddListener(l)
 }
 
 func (a *Agent) emit(e communi.AgentEvent) {
-	a.listenersMu.RLock()
-	defer a.listenersMu.RUnlock()
-	for _, slot := range a.listeners {
-		slot.l(e)
-	}
+	a.listenerManager.emit(e)
 }
 
 // SetModel updates the model.
