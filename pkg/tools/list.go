@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 type listTool struct{}
@@ -37,13 +37,13 @@ func (t *listTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) (agent.ToolResult, error) {
+func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path string `json:"path"`
 		Glob string `json:"glob"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	dir := params.Path
 	if dir == "" {
@@ -51,7 +51,7 @@ func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	var names []string
 	for _, e := range entries {
@@ -74,10 +74,10 @@ func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	} else {
 		content = fmt.Sprintf("%s\n--- %d entries", content, len(names))
 	}
-	return agent.ToolResult{Content: content}, nil
+	return communi.NewToolCallResult(toolCallID, content)
 }
 
 // NewListTool creates a new list (ls/find) AgentTool.
-func NewListTool() agent.AgentTool {
+func NewListTool() harness.Tool {
 	return &listTool{}
 }

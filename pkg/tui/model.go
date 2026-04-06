@@ -3,29 +3,29 @@ package tui
 import (
 	"context"
 	"fmt"
-	"github.com/vince-0202/acgo/pkg/bootstrap"
-	"github.com/vince-0202/acgo/pkg/utils"
-	"os"
-	"strings"
-	"sync/atomic"
-	"time"
-
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/vince-0202/acgo/pkg/agent"
+	agent2 "github.com/vince-0202/acgo/pkg/bootstrap/agent"
+	session2 "github.com/vince-0202/acgo/pkg/bootstrap/session"
+	"github.com/vince-0202/acgo/pkg/bootstrap/setting"
+	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/errors"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
-	"github.com/vince-0202/acgo/pkg/llm/anthropic"
 	"github.com/vince-0202/acgo/pkg/llm/deepseek"
-	"github.com/vince-0202/acgo/pkg/llm/gemini"
 	"github.com/vince-0202/acgo/pkg/llm/glm"
 	"github.com/vince-0202/acgo/pkg/llm/openai"
 	"github.com/vince-0202/acgo/pkg/llm/qwen"
 	"github.com/vince-0202/acgo/pkg/log"
 	"github.com/vince-0202/acgo/pkg/memory"
 	"github.com/vince-0202/acgo/pkg/session"
+	"github.com/vince-0202/acgo/pkg/utils"
+	"os"
+	"strings"
+	"sync/atomic"
 )
 
 type Model struct {
@@ -84,10 +84,10 @@ func newProviderBySettings(settings config.AgentSetting) []llm.Provider {
 			providers = append(providers, deepseek.NewClient(providerSetting))
 		case keys.ProviderTypeQwen:
 			providers = append(providers, qwen.NewClient(providerSetting))
-		case keys.ProviderTypeAnthropic:
-			providers = append(providers, anthropic.NewClient(providerSetting))
-		case keys.ProviderTypeGemini:
-			providers = append(providers, gemini.NewClient(providerSetting))
+		//case keys.ProviderTypeAnthropic:
+		//	providers = append(providers, anthropic.NewClient(providerSetting))
+		//case keys.ProviderTypeGemini:
+		//	providers = append(providers, gemini.NewClient(providerSetting))
 		case keys.ProviderTypeGLM:
 			providers = append(providers, glm.NewClient(providerSetting))
 		default:
@@ -107,10 +107,10 @@ type ModelOptions struct {
 // If opts.InitialMessages is set, the agent's history is replaced with them (e.g. after loading a session).
 func NewModel(opts *ModelOptions) (*Model, error) {
 
-	ag := bootstrap.BuildAgent(
+	ag := agent2.BuildAgent(
 		opts.Settings,
-		bootstrap.WithId("tui-"+utils.NextID(keys.IdKindSnowflake)),
-		bootstrap.WithDefaultTools(),
+		agent2.WithId("tui-"+utils.NextID(keys.IdKindSnowflake)),
+		agent2.WithDefaultTools(),
 	)
 
 	model := &Model{
@@ -127,9 +127,8 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	model.session = opts.Session
 	model.sessionRoot = opts.Settings.Session.Root
 	if len(opts.Session.Message) > 0 {
-		oldMessage := bootstrap.SessionMessagesToAgentMessage(opts.Session.Message)
-		ag.ReplaceMessages(oldMessage)
-		model.history = append(model.history, renderHistoryFromMessages(oldMessage)...)
+		ag.ReplaceMessages(opts.Session.Message)
+		model.history = append(model.history, renderHistoryFromMessages(opts.Session.Message)...)
 	}
 
 	model.registerBuiltinCommands()
@@ -176,7 +175,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if st.IsStreaming {
 					// P0.4: Agent 忙时 Enter = steering 入队
-					msg := agent.Message{Role: keys.AgentRoleUser, Content: m.textarea.Value()}
+					msg := communi.NewUserMessageWithoutId(m.textarea.Value())
 					m.agent.EnqueueSteering(msg)
 					m.textarea.SetValue("")
 					m.history = append(m.history, "You: (steering) "+input)
@@ -209,7 +208,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if st.IsStreaming {
 					// P0.4: Agent 忙时 Alt+Enter = follow-up 入队
-					msg := agent.Message{Role: keys.AgentRoleUser, Content: m.textarea.Value()}
+					msg := communi.NewUserMessageWithoutId(m.textarea.Value())
 					m.agent.EnqueueFollowUp(msg)
 					m.textarea.SetValue("")
 					m.history = append(m.history, "You: (follow-up) "+input)
@@ -233,7 +232,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Err != nil {
 				log.Debugf("stream done err=%v", msg.Err)
 				m.err = msg.Err
-				m.history = append(m.history, "Error: "+agent.FormatErrorForDisplay(msg.Err))
+				m.history = append(m.history, "Error: "+errors.FormatErrorForDisplay(msg.Err))
 			} else {
 				log.Debugf("stream done content_len=%d thinking_len=%d", len(m.streamingContent), len(m.streamingThinking))
 				if m.streamingThinking != "" {
@@ -313,9 +312,8 @@ func (m Model) View() string {
 	if commandView != "" {
 		views = append(views, commandView)
 	}
-	views = append(views,
-		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.statusLine()),
-	)
+	views = append(views, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.statusLine()))
+
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
 }
 
@@ -402,14 +400,14 @@ func (m *Model) runCommand(raw string) (reply string, quit bool) {
 func (m *Model) statusLine() string {
 	st := m.agent.State()
 	var parts []string
-	parts = append(parts, st.Model.Provider+"/"+st.Model.ID)
+	parts = append(parts, m.agent.Provider.Name()+"/"+m.agent.Model.ID)
 	if st.IsStreaming {
 		parts = append(parts, "streaming")
 	} else {
 		parts = append(parts, "idle")
 	}
 	if st.Error != nil {
-		parts = append(parts, agent.FormatErrorForDisplay(st.Error))
+		parts = append(parts, errors.FormatErrorForDisplay(st.Error))
 	}
 	status := strings.Join(parts, " | ")
 	if m.session != nil && m.session.Path != "" {
@@ -456,7 +454,7 @@ func (m *Model) runAgentStream(prompt string) tea.Cmd {
 	ch := make(chan streamEvent, 64)
 	var done atomic.Bool
 	go func() {
-		unsub := m.agent.Subscribe(func(e agent.Event) {
+		unsub := m.agent.Subscribe(func(e communi.AgentEvent) {
 			m.handleAgentEvent(e, &done, ch)
 		})
 		defer unsub()
@@ -481,20 +479,20 @@ func (m *Model) runAgentStream(prompt string) tea.Cmd {
 	}
 }
 
-func (m *Model) handleAgentEvent(e agent.Event, done *atomic.Bool, ch chan streamEvent) {
+func (m *Model) handleAgentEvent(e communi.AgentEvent, done *atomic.Bool, ch chan streamEvent) {
 	if done.Load() {
 		return
 	}
 	if m.session != nil && e.Message != nil {
 		switch e.Type {
-		case agent.EventMessageEnd:
-			_ = m.session.AppendMessage(agentMessageToSession(e.Message))
-		case agent.EventToolExecutionEnd:
-			_ = m.session.AppendMessage(agentMessageToSession(e.Message))
+		case communi.EventMessageEnd:
+			_ = m.session.AppendMessage(*e.Message)
+		case communi.EventToolExecutionEnd:
+			_ = m.session.AppendMessage(*e.Message)
 		}
 	}
 	switch e.Type {
-	case agent.EventMessageUpdate:
+	case communi.EventMessageUpdate:
 		if e.LlmEvent == nil {
 			return
 		}
@@ -510,7 +508,7 @@ func (m *Model) handleAgentEvent(e agent.Event, done *atomic.Bool, ch chan strea
 			default:
 			}
 		}
-	case agent.EventMessageEnd:
+	case communi.EventMessageEnd:
 		// Streamed deltas are accumulated in UI state; when the assistant message ends
 		// (often right before tool execution), flush finalized content/thinking so the
 		// following tool logs appear in correct chronological order.
@@ -518,7 +516,7 @@ func (m *Model) handleAgentEvent(e agent.Event, done *atomic.Bool, ch chan strea
 			return
 		}
 		finalThinking := strings.TrimSpace(e.Message.Thinking)
-		finalContent := strings.TrimSpace(e.Message.Content)
+		finalContent := strings.TrimSpace(e.Message.ContentBlocksToText())
 		if finalThinking == "" && finalContent == "" {
 			return
 		}
@@ -526,7 +524,7 @@ func (m *Model) handleAgentEvent(e agent.Event, done *atomic.Bool, ch chan strea
 		case ch <- streamEvent{FinalThinking: finalThinking, FinalContent: finalContent, Ch: ch}:
 		default:
 		}
-	case agent.EventToolExecutionStart:
+	case communi.EventToolExecutionStart:
 		lines := formatToolExecutionStartLines(e.ToolName, e.ToolCallID, e.ToolArgs)
 		if len(lines) == 0 {
 			return
@@ -535,7 +533,7 @@ func (m *Model) handleAgentEvent(e agent.Event, done *atomic.Bool, ch chan strea
 		case ch <- streamEvent{ToolText: strings.Join(lines, "\n"), Ch: ch}:
 		default:
 		}
-	case agent.EventToolExecutionEnd:
+	case communi.EventToolExecutionEnd:
 		name := strings.TrimSpace(e.ToolName)
 		if name == "" {
 			name = "unknown"
@@ -572,7 +570,7 @@ func formatToolExecutionStartLines(toolName string, toolCallID string, args []by
 	return lines
 }
 
-func formatToolExecutionEndLines(toolName string, toolCallID string, args []byte, msg *agent.Message, execErr error) []string {
+func formatToolExecutionEndLines(toolName string, toolCallID string, args []byte, msg *communi.Message, execErr error) []string {
 	const maxPreviewChars = 500
 	const maxPreviewLines = 12
 
@@ -586,7 +584,7 @@ func formatToolExecutionEndLines(toolName string, toolCallID string, args []byte
 	content := ""
 	isError := false
 	if msg != nil {
-		content = strings.TrimSpace(msg.Content)
+		content = strings.TrimSpace(msg.ContentBlocksToText())
 		isError = msg.IsError
 	}
 	if content == "" && execErr != nil {
@@ -639,12 +637,12 @@ func formatToolExecutionEndLines(toolName string, toolCallID string, args []byte
 // If sessionPath is set, that file is opened and messages are loaded into the agent.
 func Run(sessionId string) error {
 
-	settings, err := bootstrap.LoadAndRuntimeInit()
+	settings, err := setting.LoadAndRuntimeInit()
 	if err != nil {
 		return err
 	}
 
-	sess, err := bootstrap.LoadSession(sessionId, settings.Session)
+	sess, err := session2.LoadSession(sessionId, settings.Session)
 	if err != nil {
 		return err
 	}
@@ -658,22 +656,7 @@ func Run(sessionId string) error {
 	return err
 }
 
-func extractSessionName(msgs []session.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Metadata == nil {
-			continue
-		}
-		if t, _ := msgs[i].Metadata["type"].(string); t != "session_name" {
-			continue
-		}
-		if n, _ := msgs[i].Metadata["name"].(string); strings.TrimSpace(n) != "" {
-			return strings.TrimSpace(n)
-		}
-	}
-	return ""
-}
-
-func renderHistoryFromMessages(msgs []agent.Message) []string {
+func renderHistoryFromMessages(msgs []communi.Message) []string {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -688,8 +671,8 @@ func renderHistoryFromMessages(msgs []agent.Message) []string {
 	return out
 }
 
-func renderHistoryLinesFromMessage(m agent.Message) []string {
-	content := strings.TrimSpace(m.Content)
+func renderHistoryLinesFromMessage(m communi.Message) []string {
+	content := strings.TrimSpace(m.ContentBlocksToText())
 	thinking := strings.TrimSpace(m.Thinking)
 
 	switch m.Role {
@@ -725,18 +708,5 @@ func renderHistoryLinesFromMessage(m agent.Message) []string {
 			return nil
 		}
 		return []string{string(m.Role) + ": " + content}
-	}
-}
-
-func agentMessageToSession(msg *agent.Message) session.Message {
-	return session.Message{
-		ID:         msg.ID,
-		Role:       string(msg.Role),
-		Content:    msg.Content,
-		Thinking:   msg.Thinking,
-		ToolCallID: msg.ToolCallID,
-		IsError:    msg.IsError,
-		CreatedAt:  time.Now().UTC(),
-		Metadata:   msg.Metadata,
 	}
 }

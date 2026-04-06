@@ -3,7 +3,6 @@ package runtime
 import (
 	"errors"
 	"github.com/vince-0202/acgo/pkg/agent"
-	"github.com/vince-0202/acgo/pkg/llm"
 )
 
 var (
@@ -28,19 +27,4 @@ func ListAgents() []*agent.Agent {
 		out = append(out, p)
 	}
 	return out
-}
-
-// DefaultStreamFn looks up the provider for the given model and calls its Stream function.
-func DefaultStreamFn(callCtx llm.Context, model llm.Model, opts *llm.Options) (<-chan llm.Event, error) {
-	provider, ok := GetProvider(model.Provider)
-	if !ok {
-		ch := make(chan llm.Event, 1)
-		ch <- llm.Event{
-			Type:  llm.EventError,
-			Error: llm.ErrUnknownProvider(model.Provider),
-		}
-		close(ch)
-		return ch, nil
-	}
-	return provider.Stream(callCtx, model, opts)
 }

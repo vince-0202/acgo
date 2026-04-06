@@ -2,27 +2,26 @@ package agent
 
 import (
 	"context"
+	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/contextfile"
+	"github.com/vince-0202/acgo/pkg/errors"
+	"github.com/vince-0202/acgo/pkg/harness"
+	"github.com/vince-0202/acgo/pkg/utils"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
-	"github.com/vince-0202/acgo/pkg/log"
-	"github.com/vince-0202/acgo/pkg/memory"
 )
 
 // Options configures an Agent instance.
 type Options struct {
-	WorkDir          string
-	InitialState     State
-	StreamFn         llm.StreamFunc
-	ConvertToLlm     func([]Message) []llm.Message
-	TransformContext func([]Message, context.Context) []Message
-
+	WorkDir      string
+	Model        llm.Model
+	Provider     llm.Provider
+	UseTools     []harness.Tool
+	InitialState State
 	// MemoryWriter is optional. When set, Agent will automatically write
 	// long-term dialogue memories after each user->assistant exchange.
 	MemoryWriter MemoryWriter
@@ -35,21 +34,23 @@ type MemoryWriter interface {
 
 // Agent coordinates LLM calls, tools and state updates.
 type Agent struct {
-	id       string
-	state    State
-	streamFn llm.StreamFunc
+	id string
 
-	convertToLlm     func([]Message) []llm.Message
-	transformContext func([]Message, context.Context) []Message
+	contextController *harness.ContextController
+	memoryController  *harness.MemoryController
+	toolController    *harness.ToolController
+
+	Model    llm.Model
+	Provider llm.Provider
+	state    State
 
 	listenersMu    sync.RWMutex
 	listeners      []listenerSlot
 	nextListenerID int
 
 	queueMu       sync.Mutex // protects SteeringQueue and FollowUpQueue
+	memoryWriter  MemoryWriter
 	currentCancel context.CancelFunc
-
-	memoryWriter MemoryWriter
 }
 
 func (a *Agent) Id() string {
@@ -59,28 +60,25 @@ func (a *Agent) Id() string {
 // listenerSlot holds a listener and an id so Subscribe can return a working unsub.
 type listenerSlot struct {
 	id int
-	l  Listener
+	l  communi.Listener
 }
 
 // New creates a new Agent with the given options.
 func New(id string, opts Options) *Agent {
 	a := &Agent{
-		id:           id,
-		state:        opts.InitialState,
-		memoryWriter: opts.MemoryWriter,
+		id:                id,
+		Provider:          opts.Provider,
+		Model:             opts.Model,
+		state:             opts.InitialState,
+		memoryWriter:      opts.MemoryWriter,
+		contextController: harness.NewContextController(id),
 	}
 
-	a.streamFn = opts.StreamFn
-	if opts.ConvertToLlm != nil {
-		a.convertToLlm = opts.ConvertToLlm
-	} else {
-		a.convertToLlm = defaultConvertToLlm
-	}
-	if opts.TransformContext != nil {
-		a.transformContext = opts.TransformContext
-	} else {
-		a.transformContext = defaultTransformContext
-	}
+	//register the other controller
+	a.toolController = harness.NewToolController(a.id, a.emit, a.contextController.AppendMessage,
+		opts.UseTools...,
+	)
+	a.memoryController = harness.NewMemoryController()
 
 	ctxResult := contextfile.Load(filepath.Join(opts.WorkDir, id))
 	a.state.ContextFile = ctxResult
@@ -96,7 +94,7 @@ func (a *Agent) State() State {
 }
 
 // Subscribe registers a listener for events. It returns an unsubscribe function.
-func (a *Agent) Subscribe(l Listener) func() {
+func (a *Agent) Subscribe(l communi.Listener) func() {
 	a.listenersMu.Lock()
 	defer a.listenersMu.Unlock()
 	id := a.nextListenerID
@@ -118,7 +116,7 @@ func (a *Agent) Subscribe(l Listener) func() {
 	}
 }
 
-func (a *Agent) emit(e Event) {
+func (a *Agent) emit(e communi.AgentEvent) {
 	a.listenersMu.RLock()
 	defer a.listenersMu.RUnlock()
 	for _, slot := range a.listeners {
@@ -131,14 +129,14 @@ func (a *Agent) SetSystemPrompt(prompt string) {
 	a.state.SystemPrompt = prompt
 }
 
-// SetContextFile updates the Context file index.
+// SetContextFile updates the ContextController file index.
 func (a *Agent) SetContextFile(cf *contextfile.Status) {
 	a.state.ContextFile = cf
 }
 
 // SetModel updates the model.
 func (a *Agent) SetModel(m llm.Model) {
-	a.state.Model = m
+	a.Model = m
 }
 
 // SetThinkingLevel updates the thinking level.
@@ -146,45 +144,20 @@ func (a *Agent) SetThinkingLevel(level keys.ThinkingLevel) {
 	a.state.ThinkingLevel = level
 }
 
-// SetTools replaces the tool set.
-func (a *Agent) SetTools(tools []AgentTool) {
-	a.state.Tools = tools
-}
-
-// AppendMessage appends a message to the history.
-func (a *Agent) AppendMessage(msg Message) {
-	a.state.Messages = append(a.state.Messages, msg)
-}
-
-// ClearMessages clears all messages.
-func (a *Agent) ClearMessages() {
-	a.state.Messages = nil
-}
-
-// ReplaceMessages replaces the entire message history with a copy of msgs.
-// Callers can use this to load a session or batch-replace history.
-func (a *Agent) ReplaceMessages(msgs []Message) {
-	if msgs == nil {
-		a.state.Messages = nil
-		return
-	}
-	a.state.Messages = append([]Message(nil), msgs...)
-}
-
 // SetError sets the agent's error state (e.g. after a failed LLM or tool call).
 func (a *Agent) SetError(err error) {
 	a.state.Error = err
-	a.state.LastErrorKind = ClassifyError(err)
+	a.state.LastErrorKind = errors.ClassifyError(err)
 }
 
 // ClearError clears the agent's error state.
 func (a *Agent) ClearError() {
 	a.state.Error = nil
-	a.state.LastErrorKind = ErrKindNone
+	a.state.LastErrorKind = errors.ErrKindNone
 }
 
 // WaitForIdle blocks until the agent is not streaming (current turn finished or idle).
-// Returns ctx.Err() if the context is cancelled before the agent becomes idle.
+// Returns contextController.Err() if the context is cancelled before the agent becomes idle.
 // Useful in UI or tests when waiting for the current stream to complete.
 func (a *Agent) WaitForIdle(ctx context.Context) error {
 	ticker := time.NewTicker(20 * time.Millisecond)
@@ -203,11 +176,11 @@ func (a *Agent) WaitForIdle(ctx context.Context) error {
 
 // Reset clears messages, error state, and queues.
 func (a *Agent) Reset() {
-	a.state.Messages = nil
+	a.contextController.ClearMessages()
+	a.toolController.CleanPendingTool()
 	a.state.Error = nil
-	a.state.LastErrorKind = ErrKindNone
+	a.state.LastErrorKind = errors.ErrKindNone
 	a.state.StreamMessage = nil
-	a.state.PendingToolCalls = nil
 	a.queueMu.Lock()
 	a.state.SteeringQueue = nil
 	a.state.FollowUpQueue = nil
@@ -216,14 +189,14 @@ func (a *Agent) Reset() {
 
 // EnqueueSteering adds a message to the steering queue. When the agent is busy,
 // callers can enqueue; after the current turn ends, steering messages are consumed first.
-func (a *Agent) EnqueueSteering(msg Message) {
+func (a *Agent) EnqueueSteering(msg communi.Message) {
 	a.queueMu.Lock()
 	defer a.queueMu.Unlock()
 	a.state.SteeringQueue = append(a.state.SteeringQueue, msg)
 }
 
 // EnqueueFollowUp adds a message to the follow-up queue. Consumed after SteeringQueue is empty.
-func (a *Agent) EnqueueFollowUp(msg Message) {
+func (a *Agent) EnqueueFollowUp(msg communi.Message) {
 	a.queueMu.Lock()
 	defer a.queueMu.Unlock()
 	a.state.FollowUpQueue = append(a.state.FollowUpQueue, msg)
@@ -231,7 +204,7 @@ func (a *Agent) EnqueueFollowUp(msg Message) {
 
 // drainOneFromQueues removes and returns one message: steering first, then follow-up.
 // Caller must not hold queueMu.
-func (a *Agent) drainOneFromQueues() *Message {
+func (a *Agent) drainOneFromQueues() *communi.Message {
 	a.queueMu.Lock()
 	defer a.queueMu.Unlock()
 	if len(a.state.SteeringQueue) > 0 {
@@ -252,23 +225,19 @@ func (a *Agent) drainOneFromQueues() *Message {
 // When the current turn ends (no more tool calls), queued steering and follow-up
 // messages are consumed (steering first, then follow-up) and processed before returning.
 func (a *Agent) Prompt(ctx context.Context, content string) error {
-	turnID := time.Now().UTC().Format(time.RFC3339Nano)
-	userMsg := Message{
-		ID:      "user-" + turnID,
-		Role:    keys.AgentRoleUser,
-		Content: content,
-	}
-	a.AppendMessage(userMsg)
-	a.emit(Event{Type: EventAgentStart, AgentID: a.id})
+	turnID := utils.SnowflakeIDString()
+	userMsg := communi.NewUserMessage(turnID, content)
+	a.contextController.AppendMessage(userMsg)
+	a.emit(communi.AgentEvent{Type: communi.EventAgentStart, AgentID: a.id})
 
 	var lastErr error
 	firstTurn := true
 
 	for {
-		currentTurnID := time.Now().UTC().Format(time.RFC3339Nano)
-		a.emit(Event{Type: EventTurnStart, AgentID: a.id, TurnID: currentTurnID})
+		currentTurnID := utils.SnowflakeIDString()
+		a.emit(communi.AgentEvent{Type: communi.EventTurnStart, AgentID: a.id, TurnID: currentTurnID})
 
-		var userTurnMsg *Message
+		var userTurnMsg *communi.Message
 		if firstTurn {
 			a.emitUserMessage(currentTurnID, &userMsg)
 			userTurnMsg = &userMsg
@@ -279,43 +248,41 @@ func (a *Agent) Prompt(ctx context.Context, content string) error {
 				break
 			}
 		}
+		go a.memoryController.RecordWithMetaData(ctx, userTurnMsg, map[string]any{
+			"turnID": currentTurnID,
+			"type":   "userAsk",
+		})
 
 		lastErr = a.runLLMTurnsUntilDone(ctx, currentTurnID)
 		if lastErr != nil {
 			break
 		}
 
-		// Long-term memory write: user message -> final assistant content.
-		if a.memoryWriter != nil && userTurnMsg != nil {
-			sessionID, _ := memory.SessionIDFromContext(ctx)
-			assistantText := lastAssistantText(a.state.Messages)
-			if assistantText != "" || userTurnMsg.Content != "" {
-				if err := a.memoryWriter.WriteDialogue(ctx, sessionID, userTurnMsg.Content, assistantText); err != nil {
-					log.Debugf("[memory] write dialogue err=%v", err)
-				}
-			}
-		}
+		go a.memoryController.RecordWithMetaData(ctx, a.contextController.LastAssistantMessage(), map[string]any{
+			"turnID": currentTurnID,
+			"type":   "assistant",
+		})
 	}
 
-	kind := ClassifyError(lastErr)
-	a.emit(Event{Type: EventAgentEnd, AgentID: a.id, Error: lastErr, ErrorKind: kind})
-	return WrapAgentError(lastErr, kind)
+	kind := errors.ClassifyError(lastErr)
+	a.emit(communi.AgentEvent{Type: communi.EventAgentEnd, AgentID: a.id, Error: lastErr, ErrorKind: kind})
+	return errors.WrapAgentError(lastErr, kind)
 }
 
 // emitUserMessage emits MessageStart and MessageEnd for a user message.
-func (a *Agent) emitUserMessage(turnID string, msg *Message) {
-	a.emit(Event{Type: EventMessageStart, AgentID: a.id, TurnID: turnID, Message: msg})
-	a.emit(Event{Type: EventMessageEnd, AgentID: a.id, TurnID: turnID, Message: msg})
+func (a *Agent) emitUserMessage(turnID string, msg *communi.Message) {
+	a.emit(communi.AgentEvent{Type: communi.EventMessageStart, AgentID: a.id, TurnID: turnID, Message: msg})
+	a.emit(communi.AgentEvent{Type: communi.EventMessageEnd, AgentID: a.id, TurnID: turnID, Message: msg})
 }
 
 // emitNextQueuedMessage drains one message from steering or follow-up queue, appends it, and emits events.
 // Returns the consumed message or nil if both queues were empty.
-func (a *Agent) emitNextQueuedMessage(turnID string) *Message {
+func (a *Agent) emitNextQueuedMessage(turnID string) *communi.Message {
 	next := a.drainOneFromQueues()
 	if next == nil {
 		return nil
 	}
-	a.AppendMessage(*next)
+	a.contextController.AppendMessage(*next)
 	a.emitUserMessage(turnID, next)
 	return next
 }
@@ -330,57 +297,50 @@ func (a *Agent) runLLMTurnsUntilDone(ctx context.Context, turnID string) error {
 		if !hasToolCalls {
 			return nil
 		}
-		a.executePendingTools(ctx)
+		a.toolController.Execute(ctx)
 	}
 }
 
 // runOneStreamTurn performs one LLM stream call: build context, stream, process events, append assistant, emit done.
 // Returns (error if any, whether there are pending tool calls to execute).
 func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error, hasToolCalls bool) {
-	ctxTurn, cancel := context.WithCancel(ctx)
-	a.currentCancel = cancel
+	ctx, cancel := context.WithCancel(ctx)
 	a.state.IsStreaming = true
+	a.currentCancel = cancel
 	defer func() {
 		a.state.IsStreaming = false
 		a.currentCancel = nil
 	}()
 
-	messages := a.transformContext(a.state.Messages, ctxTurn)
-	llmMessages := a.convertToLlm(messages)
-	llmCtx := llm.Context{Go: ctxTurn, Messages: llmMessages}
-	a.state.PendingToolCalls = nil
+	a.contextController.TrimMessage()
+	a.toolController.CleanPendingTool()
 
 	opts := &llm.Options{
-		Tools:           agentToolsToLlm(a.state.Tools),
+		Tools:           a.toolController.GetToolSchemas(),
 		ReasoningEffort: a.state.ThinkingLevel,
 	}
 
-	a.debugLogLLMRequest(turnID, llmCtx, a.state.Model, opts)
-	events, streamErr := a.streamFn(llmCtx, a.state.Model, opts)
+	events, streamErr := a.Provider.Stream(ctx, a.Model, a.contextController.Messages, opts)
 	if streamErr != nil {
-		kind := ClassifyError(streamErr)
+		kind := errors.ClassifyError(streamErr)
 		a.state.Error = streamErr
 		a.state.LastErrorKind = kind
-		a.emit(Event{Type: EventTurnEnd, AgentID: a.id, TurnID: turnID, Error: streamErr, ErrorKind: kind})
+		a.emit(communi.AgentEvent{Type: communi.EventTurnEnd, AgentID: a.id, TurnID: turnID, Error: streamErr, ErrorKind: kind})
 		return streamErr, false
 	}
 
-	assistant := Message{ID: "assistant-" + turnID, Role: keys.AgentRoleAssistant}
+	assistant := communi.NewAssistantMessage(turnID, "")
 	a.state.StreamMessage = &assistant
-	a.emit(Event{Type: EventMessageStart, AgentID: a.id, TurnID: turnID, Message: &assistant})
+	a.emit(communi.AgentEvent{Type: communi.EventMessageStart, AgentID: a.id, TurnID: turnID, Message: &assistant})
 
 	lastDone, lastErr := a.processStreamEvents(events, &assistant, turnID)
 	a.state.StreamMessage = nil
 
-	if len(a.state.PendingToolCalls) > 0 {
-		assistant.LlmMessage = &llm.Message{
-			Role:     llm.RoleAssistant,
-			Content:  []llm.ContentBlock{{Type: "text", Text: assistant.Content}},
-			Thinking: assistant.Thinking,
-			ToolCall: &a.state.PendingToolCalls[0],
-		}
+	pendingToolCalls := a.toolController.GetPendingToolCalls()
+	if len(pendingToolCalls) > 0 {
+		assistant.ToolCall = &pendingToolCalls[0]
 	}
-	a.AppendMessage(assistant)
+	a.contextController.AppendMessage(assistant)
 
 	if lastDone != nil {
 		a.state.LastStopReason = lastDone.StopReason
@@ -390,120 +350,44 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 			a.state.LastUsage = nil
 		}
 	}
-	turnEndKind := ClassifyError(lastErr)
-	a.emit(Event{Type: EventMessageEnd, AgentID: a.id, TurnID: turnID, Message: &assistant})
-	a.emit(Event{Type: EventTurnEnd, AgentID: a.id, TurnID: turnID, LlmEvent: lastDone, Error: lastErr, ErrorKind: turnEndKind})
+	turnEndKind := errors.ClassifyError(lastErr)
+	a.emit(communi.AgentEvent{Type: communi.EventMessageEnd, AgentID: a.id, TurnID: turnID, Message: &assistant})
+	a.emit(communi.AgentEvent{Type: communi.EventTurnEnd, AgentID: a.id, TurnID: turnID, LlmEvent: lastDone, Error: lastErr, ErrorKind: turnEndKind})
 	if lastErr != nil {
 		a.state.Error = lastErr
 		a.state.LastErrorKind = turnEndKind
 		return lastErr, false
 	}
-	return nil, len(a.state.PendingToolCalls) > 0
-}
-
-func (a *Agent) debugLogLLMRequest(turnID string, llmCtx llm.Context, model llm.Model, opts *llm.Options) {
-	// Only emits at debug level; safe to call unconditionally.
-	const maxMsgChars = 240
-	const maxSystemPromptChars = 1200
-
-	var toolNames []string
-	if opts != nil {
-		for _, t := range opts.Tools {
-			toolNames = append(toolNames, t.Name)
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString("llm request:\n")
-	b.WriteString("  turn_id: " + turnID + "\n")
-	b.WriteString("  model: " + strings.TrimSpace(model.Provider) + "/" + strings.TrimSpace(model.ID) + "\n")
-	if opts != nil {
-		b.WriteString("  reasoning_effort: " + string(opts.ReasoningEffort) + "\n")
-	}
-	sys := strings.TrimSpace(a.state.SystemPrompt)
-	sysPreview := sys
-	if len(sysPreview) > maxSystemPromptChars {
-		sysPreview = sysPreview[:maxSystemPromptChars] + "…"
-	}
-	b.WriteString("  system_prompt_chars: " + strconv.Itoa(len(sys)) + "\n")
-	if sysPreview != "" {
-		b.WriteString("  system_prompt: " + strconv.Quote(sysPreview) + "\n")
-	} else {
-		b.WriteString("  system_prompt: (empty)\n")
-	}
-	if len(toolNames) > 0 {
-		b.WriteString("  tools: " + strings.Join(toolNames, ", ") + "\n")
-	} else {
-		b.WriteString("  tools: (none)\n")
-	}
-	b.WriteString("  messages:\n")
-	for i, m := range llmCtx.Messages {
-		role := string(m.Role)
-		snippet := ""
-		if len(m.Content) > 0 {
-			// Prefer text snippets; ignore non-text blocks for logging.
-			for _, blk := range m.Content {
-				if blk.Type == "text" && strings.TrimSpace(blk.Text) != "" {
-					snippet = strings.TrimSpace(blk.Text)
-					break
-				}
-			}
-		}
-		if snippet == "" && m.ToolResult != nil {
-			for _, blk := range m.ToolResult.Content {
-				if blk.Type == "text" && strings.TrimSpace(blk.Text) != "" {
-					snippet = strings.TrimSpace(blk.Text)
-					break
-				}
-			}
-		}
-		if len(snippet) > maxMsgChars {
-			snippet = snippet[:maxMsgChars] + "…"
-		}
-
-		line := "    - [" + strconv.Itoa(i) + "] " + role
-		if m.ToolCall != nil && strings.TrimSpace(m.ToolCall.Name) != "" {
-			line += " tool_call=" + strings.TrimSpace(m.ToolCall.Name)
-		}
-		if m.ToolResult != nil && strings.TrimSpace(m.ToolResult.ToolCallID) != "" {
-			line += " tool_result_call_id=" + strings.TrimSpace(m.ToolResult.ToolCallID)
-		}
-		if snippet != "" {
-			line += " text=" + strconv.Quote(snippet)
-		}
-		b.WriteString(line + "\n")
-	}
-
-	log.Debug(strings.TrimSuffix(b.String(), "\n"))
+	return nil, len(pendingToolCalls) > 0
 }
 
 // processStreamEvents consumes the event channel and updates assistant state; emits MessageUpdate events.
-func (a *Agent) processStreamEvents(events <-chan llm.Event, assistant *Message, turnID string) (lastDone *llm.Event, lastErr error) {
+func (a *Agent) processStreamEvents(events <-chan communi.LLMEvent, assistant *communi.Message, turnID string) (lastDone *communi.LLMEvent, lastErr error) {
 	for ev := range events {
 		switch ev.Type {
-		case llm.EventTextDelta:
-			assistant.Content += ev.TextDelta
-			a.emit(Event{Type: EventMessageUpdate, AgentID: a.id, TurnID: turnID, Message: assistant, LlmEvent: &ev})
-		case llm.EventThinkingStart:
+		case communi.EventTextDelta:
+			assistant.AppendTextValue(ev.TextDelta)
+			a.emit(communi.AgentEvent{Type: communi.EventMessageUpdate, AgentID: a.id, TurnID: turnID, Message: assistant, LlmEvent: &ev})
+		case communi.EventThinkingStart:
 			evCopy := ev
-			a.emit(Event{Type: EventMessageUpdate, AgentID: a.id, TurnID: turnID, Message: assistant, LlmEvent: &evCopy})
-		case llm.EventThinkingDelta:
+			a.emit(communi.AgentEvent{Type: communi.EventMessageUpdate, AgentID: a.id, TurnID: turnID, Message: assistant, LlmEvent: &evCopy})
+		case communi.EventThinkingDelta:
 			assistant.Thinking += ev.ThinkingDelta
 			evCopy := ev
-			a.emit(Event{Type: EventMessageUpdate, AgentID: a.id, TurnID: turnID, Message: assistant, LlmEvent: &evCopy})
-		case llm.EventThinkingEnd:
+			a.emit(communi.AgentEvent{Type: communi.EventMessageUpdate, AgentID: a.id, TurnID: turnID, Message: assistant, LlmEvent: &evCopy})
+		case communi.EventThinkingEnd:
 			evCopy := ev
-			a.emit(Event{Type: EventMessageUpdate, AgentID: a.id, TurnID: turnID, Message: assistant, LlmEvent: &evCopy})
-		case llm.EventToolCallStart, llm.EventToolCallDelta, llm.EventToolCallEnd:
+			a.emit(communi.AgentEvent{Type: communi.EventMessageUpdate, AgentID: a.id, TurnID: turnID, Message: assistant, LlmEvent: &evCopy})
+		case communi.EventToolCallStart, communi.EventToolCallDelta, communi.EventToolCallEnd:
 			if ev.ToolCall != nil {
-				a.upsertPendingToolCall(*ev.ToolCall)
+				a.toolController.UpsertPendingToolCall(*ev.ToolCall)
 			}
-		case llm.EventError:
+		case communi.EventError:
 			a.state.Error = ev.Error
-			a.state.LastErrorKind = ErrKindLLM
+			a.state.LastErrorKind = errors.ErrKindLLM
 			lastErr = ev.Error
 			assistant.IsError = true
-		case llm.EventDone:
+		case communi.EventDone:
 			evCopy := ev
 			lastDone = &evCopy
 		}
@@ -518,139 +402,31 @@ func (a *Agent) Abort() {
 	}
 }
 
-// upsertPendingToolCall tracks the latest version of a ToolCall by ID.
-// Stored Arguments are always normalized so they are non-nil and usable for execution.
-func (a *Agent) upsertPendingToolCall(call llm.ToolCall) {
-	normalized := llm.ToolCall{
-		ID:        call.ID,
-		Name:      call.Name,
-		Arguments: llm.NormalizeToolCallArguments(call.Arguments),
-	}
-	for i := range a.state.PendingToolCalls {
-		if a.state.PendingToolCalls[i].ID == call.ID {
-			a.state.PendingToolCalls[i] = normalized
-			return
-		}
-	}
-	a.state.PendingToolCalls = append(a.state.PendingToolCalls, normalized)
+func (a *Agent) ReplaceMessages(message []communi.Message) {
+	a.contextController.ReplaceMessages(message)
 }
 
-func (a *Agent) findTool(name string) AgentTool {
-	for _, t := range a.state.Tools {
-		if t.Name() == name {
-			return t
-		}
-	}
-	return nil
-}
-
-// executePendingTools runs all pending tool calls and appends toolResult messages.
-func (a *Agent) executePendingTools(ctx context.Context) {
-	calls := a.state.PendingToolCalls
-	a.state.PendingToolCalls = nil
-
-	for _, call := range calls {
-		tool := a.findTool(call.Name)
-		if tool == nil {
-			args := llm.NormalizeToolCallArguments(call.Arguments)
-			toolMsg := Message{
-				ID:         "tool-" + call.ID,
-				Role:       keys.AgentRoleTool,
-				Content:    "unknown tool: " + call.Name,
-				ToolCallID: call.ID,
-				IsError:    true,
-			}
-			a.AppendMessage(toolMsg)
-			a.emit(Event{
-				Type:       EventToolExecutionEnd,
-				AgentID:    a.id,
-				ToolName:   call.Name,
-				ToolCallID: call.ID,
-				ToolArgs:   args,
-				Message:    &toolMsg,
-				Error:      llm.ErrUnknownProvider(call.Name),
-				ErrorKind:  ErrKindTool,
-			})
-			continue
-		}
-
-		args := llm.NormalizeToolCallArguments(call.Arguments)
-		args = CoerceToolArguments(tool.JSONSchema(), args)
-		a.emit(Event{
-			Type:       EventToolExecutionStart,
-			AgentID:    a.id,
-			ToolName:   tool.Name(),
-			ToolCallID: call.ID,
-			ToolArgs:   args,
-		})
-
-		var result ToolResult
-		var err error
-		if vErr := ValidateToolArguments(tool.Name(), tool.JSONSchema(), args); vErr != nil {
-			// Validation failures are delivered as tool results with IsError so the model can retry.
-			result = ToolResult{Content: vErr.Error(), IsError: true}
-			err = vErr
-		} else {
-			result, err = tool.Execute(ctx, call.ID, args, nil)
-		}
-		if err != nil {
-			result = ToolResult{
-				Content: err.Error(),
-				IsError: true,
-			}
-		}
-
-		toolMsg := Message{
-			ID:         "tool-" + call.ID,
-			Role:       keys.AgentRoleTool,
-			Content:    result.Content,
-			ToolCallID: call.ID,
-			IsError:    result.IsError,
-			Metadata:   result.Metadata,
-		}
-		a.AppendMessage(toolMsg)
-
-		a.emit(Event{
-			Type:       EventToolExecutionEnd,
-			AgentID:    a.id,
-			ToolName:   tool.Name(),
-			ToolCallID: call.ID,
-			ToolArgs:   args,
-			Message:    &toolMsg,
-			Error:      err,
-			ErrorKind:  ErrKindTool,
-		})
-	}
-}
-
-func lastAssistantText(msgs []Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == keys.AgentRoleAssistant {
-			return msgs[i].Content
-		}
-	}
-	return ""
+func (a *Agent) GetMessages() []communi.Message {
+	return a.contextController.Messages
 }
 
 // State AgentState holds the mutable state of an Agent instance.
 type State struct {
 	WorkDir       string
 	SystemPrompt  string
-	Model         llm.Model
 	ThinkingLevel keys.ThinkingLevel
-	Tools         []AgentTool
-	Messages      []Message
-	ContextFile   *contextfile.Status
 
-	IsStreaming      bool
-	StreamMessage    *Message
-	PendingToolCalls []llm.ToolCall
-	Error            error
-	LastErrorKind    ErrKind // classification of Error for UI
+	//Messages      []Message
+	ContextFile *contextfile.Status
+
+	IsStreaming   bool
+	StreamMessage *communi.Message
+	Error         error
+	LastErrorKind errors.ErrKind // classification of Error for UI
 
 	// LastUsage captures the most recent token usage reported by the LLM
 	// provider for a completed turn, if available.
-	LastUsage *llm.Usage
+	LastUsage *communi.Usage
 
 	// LastStopReason records the last completion stop reason reported by
 	// the provider (e.g. "stop", "length", "toolUse", "error", "aborted").
@@ -658,8 +434,8 @@ type State struct {
 
 	// SteeringQueue holds user/steering messages to process next; consumed before FollowUpQueue.
 	// When the agent is busy, callers may enqueue here; after the current turn ends, these are processed first.
-	SteeringQueue []Message
+	SteeringQueue []communi.Message
 
 	// FollowUpQueue holds follow-up messages; consumed after SteeringQueue is empty.
-	FollowUpQueue []Message
+	FollowUpQueue []communi.Message
 }

@@ -3,10 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"os"
-
-	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 type readTool struct{}
@@ -31,7 +30,7 @@ func (t *readTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) (agent.ToolResult, error) {
+func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path string `json:"path"`
 	}
@@ -41,19 +40,17 @@ func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 		if json.Unmarshal(args, &raw) == nil && raw != "" {
 			params.Path = raw
 		} else {
-			return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+			return communi.ErrorToolCallResult(toolCallID, err)
 		}
 	}
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
-		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
-	return agent.ToolResult{
-		Content: string(data),
-	}, nil
+	return communi.NewToolCallResult(toolCallID, string(data))
 }
 
 // NewReadTool creates a new read AgentTool.
-func NewReadTool() agent.AgentTool {
+func NewReadTool() harness.Tool {
 	return &readTool{}
 }

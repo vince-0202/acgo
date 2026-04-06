@@ -70,10 +70,3 @@ func (a *ToolCallAccumulator) Build() ToolCall {
 		Arguments: NormalizeToolCallArguments(raw),
 	}
 }
-
-// ToolResult represents the result of executing a tool.
-type ToolResult struct {
-	ToolCallID string         `json:"tool_call_id"`
-	Content    []ContentBlock `json:"content"`
-	IsError    bool           `json:"is_error,omitempty"`
-}

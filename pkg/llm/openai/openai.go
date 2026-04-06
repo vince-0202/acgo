@@ -1,8 +1,10 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/communi"
 	"strings"
 
 	"github.com/vince-0202/acgo/pkg/config"
@@ -64,26 +66,26 @@ func (c *Client) Name() string { return c.provider }
 
 func (c *Client) Models() []llm.Model { return c.models }
 
-func (c *Client) Stream(callCtx llm.Context, model llm.Model, opts *llm.Options) (<-chan llm.Event, error) {
-	out := make(chan llm.Event)
+func (c *Client) Stream(ctx context.Context, model llm.Model, message []communi.Message, opts *llm.Options) (<-chan communi.LLMEvent, error) {
+	out := make(chan communi.LLMEvent)
 	go func() {
 		defer close(out)
 
 		if c.apiKey == "" {
-			out <- llm.Event{Type: llm.EventError, Error: fmt.Errorf("provider api key is not set")}
+			out <- communi.LLMEvent{Type: communi.EventError, Error: fmt.Errorf("provider api key is not set")}
 			return
 		}
 
-		params := c.buildChatCompletionNewParams(callCtx, model, opts, true)
-		log.Debugf("[llm] stream call model=%s provider=%s messages=%d", model.ID, c.provider, len(callCtx.Messages))
+		params := c.buildChatCompletionNewParams(message, model, opts, true)
+		log.Debugf("[llm] stream call model=%s provider=%s messages=%d", model.ID, c.provider, len(message))
 
-		stream := c.oai.Chat.Completions.NewStreaming(callCtx, params)
+		stream := c.oai.Chat.Completions.NewStreaming(ctx, params)
 		if err := stream.Err(); err != nil {
-			out <- llm.Event{Type: llm.EventError, Error: err}
+			out <- communi.LLMEvent{Type: communi.EventError, Error: err}
 			return
 		}
 
-		out <- llm.Event{Type: llm.EventStart}
+		out <- communi.LLMEvent{Type: communi.EventStart}
 
 		st := &streamState{}
 		var (
@@ -115,7 +117,7 @@ func (c *Client) Stream(callCtx llm.Context, model llm.Model, opts *llm.Options)
 		}
 
 		if err := stream.Err(); err != nil {
-			out <- llm.Event{Type: llm.EventError, Error: err}
+			out <- communi.LLMEvent{Type: communi.EventError, Error: err}
 			return
 		}
 
@@ -126,48 +128,42 @@ func (c *Client) Stream(callCtx llm.Context, model llm.Model, opts *llm.Options)
 			st.emitEndEvents(out)
 			stopReason = "stop"
 		}
-		out <- llm.Event{Type: llm.EventDone, StopReason: stopReason, Usage: &st.usage}
+		out <- communi.LLMEvent{Type: communi.EventDone, StopReason: stopReason, Usage: &st.usage}
 	}()
 
 	return out, nil
 }
 
-func (c *Client) Complete(callCtx llm.Context, model llm.Model, opts *llm.Options) (llm.Message, llm.Usage, error) {
+func (c *Client) Complete(ctx context.Context, model llm.Model, message []communi.Message, opts *llm.Options) (communi.Message, llm.Usage, error) {
 	if c.apiKey == "" {
-		return llm.Message{}, llm.Usage{}, fmt.Errorf("%s is not set", c.apiKey)
+		return communi.Message{}, llm.Usage{}, fmt.Errorf("%s is not set", c.apiKey)
 	}
 
-	params := c.buildChatCompletionNewParams(callCtx, model, opts, false)
-	log.Debugf("[llm] call model=%s provider=%s messages=%d", model.ID, c.provider, len(callCtx.Messages))
+	params := c.buildChatCompletionNewParams(message, model, opts, false)
+	log.Debugf("[llm] call model=%s provider=%s messages=%d", model.ID, c.provider, len(message))
 
-	resp, err := c.oai.Chat.Completions.New(callCtx, params)
+	resp, err := c.oai.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return llm.Message{}, llm.Usage{}, err
+		return communi.Message{}, llm.Usage{}, err
 	}
 	if resp == nil || len(resp.Choices) == 0 {
-		return llm.Message{}, llm.Usage{}, fmt.Errorf("no choices returned from API")
+		return communi.Message{}, llm.Usage{}, fmt.Errorf("no choices returned from API")
 	}
 
 	choice := resp.Choices[0]
-	msg := llm.Message{
-		Role:     llm.RoleAssistant,
-		Provider: c.Name(),
-	}
 
+	msg := communi.NewEmptyAssistantMessage()
+	msg.AppendMetadata("provider", c.Name)
 	// Tool calls (prefer tool_calls).
 	if len(choice.Message.ToolCalls) > 0 {
 		toolCallUnion := choice.Message.ToolCalls[0]
 		switch toolCallUnion.Type {
 		case "function":
 			fn := toolCallUnion.AsFunction()
-			msg.ToolCall = &llm.ToolCall{
-				ID:        fn.ID,
-				Name:      fn.Function.Name,
-				Arguments: json.RawMessage(fn.Function.Arguments),
-			}
+			msg.AppendToolCall(fn)
 		}
 	} else {
-		msg.Content = []llm.ContentBlock{{Type: "text", Text: choice.Message.Content}}
+		msg.AppendTextContent(choice.Message.Content)
 	}
 
 	var usage llm.Usage
@@ -181,10 +177,10 @@ func (c *Client) Complete(callCtx llm.Context, model llm.Model, opts *llm.Option
 	return msg, usage, nil
 }
 
-func (c *Client) buildChatCompletionNewParams(callCtx llm.Context, model llm.Model, opts *llm.Options, streaming bool) oai.ChatCompletionNewParams {
+func (c *Client) buildChatCompletionNewParams(message []communi.Message, model llm.Model, opts *llm.Options, streaming bool) oai.ChatCompletionNewParams {
 	params := oai.ChatCompletionNewParams{
 		Model:    model.ID,
-		Messages: convertMessages(callCtx.Messages),
+		Messages: convertMessages(message),
 	}
 
 	if opts != nil {
@@ -257,7 +253,7 @@ func mapMetadata(in map[string]any) shared.Metadata {
 	return out
 }
 
-func convertTools(tools []llm.Tool) []oai.ChatCompletionToolUnionParam {
+func convertTools(tools []communi.ToolSchema) []oai.ChatCompletionToolUnionParam {
 	out := make([]oai.ChatCompletionToolUnionParam, 0, len(tools))
 	for _, t := range tools {
 		fn := shared.FunctionDefinitionParam{
@@ -270,64 +266,41 @@ func convertTools(tools []llm.Tool) []oai.ChatCompletionToolUnionParam {
 	return out
 }
 
-func convertMessages(msgs []llm.Message) []oai.ChatCompletionMessageParamUnion {
+func convertMessages(msgs []communi.Message) []oai.ChatCompletionMessageParamUnion {
 	out := make([]oai.ChatCompletionMessageParamUnion, 0, len(msgs))
 	for _, m := range msgs {
-		contentText := contentBlocksToText(m.Content)
-
+		contentText := m.ContentBlocksToText()
 		switch m.Role {
-		case llm.RoleSystem:
+		case keys.AgentRoleSystem:
 			out = append(out, oai.SystemMessage(contentText))
-		case llm.RoleUser:
+		case keys.AgentRoleUser:
 			out = append(out, oai.UserMessage(contentText))
-		case llm.RoleTool:
-			out = append(out, oai.ToolMessage(contentText, m.ToolCallID))
-		case llm.RoleAssistant:
+		case keys.AgentRoleTool:
+			out = append(out, oai.ToolMessage(contentText, m.ToolCallId()))
+		case keys.AgentRoleAssistant:
+			assistantMsg := oai.AssistantMessage(contentText)
+			assistantMsg.OfAssistant.SetExtraFields(map[string]any{
+				"reasoning_content": m.Thinking,
+			})
 			if m.ToolCall != nil {
-				assistantMsg := oai.AssistantMessage(contentText)
-				if assistantMsg.OfAssistant != nil {
-					// DeepSeek thinking mode expects `reasoning_content` to be present on
-					// assistant messages that also contain tool calls.
-					assistantMsg.OfAssistant.SetExtraFields(map[string]any{
-						"reasoning_content": m.Thinking,
-					})
-					assistantMsg.OfAssistant.ToolCalls = []oai.ChatCompletionMessageToolCallUnionParam{
-						{
-							OfFunction: &oai.ChatCompletionMessageFunctionToolCallParam{
-								ID: m.ToolCall.ID,
-								Function: oai.ChatCompletionMessageFunctionToolCallFunctionParam{
-									Name:      m.ToolCall.Name,
-									Arguments: string(m.ToolCall.Arguments),
-								},
+				assistantMsg.OfAssistant.ToolCalls = []oai.ChatCompletionMessageToolCallUnionParam{
+					{
+						OfFunction: &oai.ChatCompletionMessageFunctionToolCallParam{
+							ID: m.ToolCall.ID,
+							Function: oai.ChatCompletionMessageFunctionToolCallFunctionParam{
+								Name:      m.ToolCall.Name,
+								Arguments: string(m.ToolCall.Arguments),
 							},
 						},
-					}
+					},
 				}
-				out = append(out, assistantMsg)
-			} else {
-				assistantMsg := oai.AssistantMessage(contentText)
-				if assistantMsg.OfAssistant != nil && m.Thinking != "" {
-					assistantMsg.OfAssistant.SetExtraFields(map[string]any{
-						"reasoning_content": m.Thinking,
-					})
-				}
-				out = append(out, assistantMsg)
 			}
+			out = append(out, assistantMsg)
 		default:
 			// Drop unknown roles.
 		}
 	}
 	return out
-}
-
-func contentBlocksToText(blocks []llm.ContentBlock) string {
-	var b strings.Builder
-	for _, c := range blocks {
-		if c.Type == "text" {
-			b.WriteString(c.Text)
-		}
-	}
-	return b.String()
 }
 
 type streamState struct {
@@ -338,7 +311,7 @@ type streamState struct {
 	toolCallID   string
 	toolCallName string
 
-	usage llm.Usage
+	usage communi.Usage
 }
 
 func (s *streamState) applyUsage(chunk oai.ChatCompletionChunk) {
@@ -351,7 +324,7 @@ func (s *streamState) applyUsage(chunk oai.ChatCompletionChunk) {
 
 }
 
-func (s *streamState) processDelta(delta oai.ChatCompletionChunkChoiceDelta, out chan<- llm.Event) bool {
+func (s *streamState) processDelta(delta oai.ChatCompletionChunkChoiceDelta, out chan<- communi.LLMEvent) bool {
 	// Thinking: in some OpenAI-compatible servers (e.g. DeepSeek), a custom
 	// `reasoning_content` field may appear in the delta JSON.
 	reasoningDelta := extraString(delta.JSON.ExtraFields, "reasoning_content")
@@ -363,22 +336,22 @@ func (s *streamState) processDelta(delta oai.ChatCompletionChunkChoiceDelta, out
 	if reasoningDelta != "" {
 		if !s.thinkingStarted {
 			s.thinkingStarted = true
-			out <- llm.Event{Type: llm.EventThinkingStart}
+			out <- communi.LLMEvent{Type: communi.EventThinkingStart}
 		}
-		out <- llm.Event{Type: llm.EventThinkingDelta, ThinkingDelta: reasoningDelta}
+		out <- communi.LLMEvent{Type: communi.EventThinkingDelta, ThinkingDelta: reasoningDelta}
 	}
 
 	// Text.
 	if delta.Content != "" {
 		if s.thinkingStarted {
-			out <- llm.Event{Type: llm.EventThinkingEnd}
+			out <- communi.LLMEvent{Type: communi.EventThinkingEnd}
 			s.thinkingStarted = false
 		}
 		if !s.textStarted {
 			s.textStarted = true
-			out <- llm.Event{Type: llm.EventTextStart}
+			out <- communi.LLMEvent{Type: communi.EventTextStart}
 		}
-		out <- llm.Event{Type: llm.EventTextDelta, TextDelta: delta.Content}
+		out <- communi.LLMEvent{Type: communi.EventTextDelta, TextDelta: delta.Content}
 	}
 
 	// Tool calls: only accumulate arguments; toolcall start/end is emitted on finish_reason.
@@ -400,10 +373,10 @@ func (s *streamState) processDelta(delta oai.ChatCompletionChunkChoiceDelta, out
 	return true
 }
 
-func (s *streamState) emitFinishEvents(finishReason string, out chan<- llm.Event) {
+func (s *streamState) emitFinishEvents(finishReason string, out chan<- communi.LLMEvent) {
 	// Close thinking stream.
 	if s.thinkingStarted {
-		out <- llm.Event{Type: llm.EventThinkingEnd}
+		out <- communi.LLMEvent{Type: communi.EventThinkingEnd}
 	}
 
 	// Prefer toolcall when finish_reason indicates tool use.
@@ -412,32 +385,32 @@ func (s *streamState) emitFinishEvents(finishReason string, out chan<- llm.Event
 		if len(s.toolCallArgs) > 0 {
 			args = s.toolCallArgs[0]
 		}
-		tc := &llm.ToolCall{
+		tc := &communi.ToolCallRequest{
 			ID:        s.toolCallID,
 			Name:      s.toolCallName,
 			Arguments: llm.NormalizeToolCallArguments(json.RawMessage(args)),
 		}
-		out <- llm.Event{Type: llm.EventToolCallStart, ToolCall: tc}
-		out <- llm.Event{Type: llm.EventToolCallEnd, ToolCall: tc}
+		out <- communi.LLMEvent{Type: communi.EventToolCallStart, ToolCall: tc}
+		out <- communi.LLMEvent{Type: communi.EventToolCallEnd, ToolCall: tc}
 		return
 	}
 
 	// Otherwise treat as plain text.
 	if !s.textStarted {
-		out <- llm.Event{Type: llm.EventTextStart}
+		out <- communi.LLMEvent{Type: communi.EventTextStart}
 	}
-	out <- llm.Event{Type: llm.EventTextEnd}
+	out <- communi.LLMEvent{Type: communi.EventTextEnd}
 }
 
-func (s *streamState) emitEndEvents(out chan<- llm.Event) {
+func (s *streamState) emitEndEvents(out chan<- communi.LLMEvent) {
 	if s.thinkingStarted {
-		out <- llm.Event{Type: llm.EventThinkingEnd}
+		out <- communi.LLMEvent{Type: communi.EventThinkingEnd}
 	}
 	if s.textStarted {
-		out <- llm.Event{Type: llm.EventTextEnd}
+		out <- communi.LLMEvent{Type: communi.EventTextEnd}
 	} else if !s.thinkingStarted && s.toolCallID == "" {
-		out <- llm.Event{Type: llm.EventTextStart}
-		out <- llm.Event{Type: llm.EventTextEnd}
+		out <- communi.LLMEvent{Type: communi.EventTextStart}
+		out <- communi.LLMEvent{Type: communi.EventTextEnd}
 	}
 }
 

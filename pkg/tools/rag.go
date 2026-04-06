@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/rag"
 	"strings"
-
-	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 // ragTool exposes semantic search over the indexed document chunks.
@@ -39,13 +39,13 @@ func (t *ragTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) (agent.ToolResult, error) {
+func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Query string  `json:"query"`
 		TopK  float64 `json:"top_k"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	topK := int(params.TopK)
 	if topK <= 0 {
@@ -55,10 +55,10 @@ func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawM
 		"mem_kind": "document",
 	})
 	if err != nil {
-		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	if len(chunks) == 0 {
-		return agent.ToolResult{Content: "no relevant chunks found"}, nil
+		return communi.NewToolCallResult(toolCallID, "no relevant chunks found")
 	}
 	var b strings.Builder
 	for i, c := range chunks {
@@ -75,11 +75,11 @@ func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawM
 		}
 		b.WriteString("\n")
 	}
-	return agent.ToolResult{Content: strings.TrimSpace(b.String())}, nil
+	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(b.String()))
 }
 
 // NewRagTool creates a new RAG search AgentTool.
-func NewRagTool() agent.AgentTool {
+func NewRagTool() harness.Tool {
 	return &ragTool{
 		retriever: rag.GetRetriever(),
 	}

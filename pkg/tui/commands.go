@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/runtime"
 	"os"
 	"strings"
@@ -77,7 +78,7 @@ func (m *Model) registerBuiltinCommands() {
 			}
 			models := runtime.ListModels()
 			var b strings.Builder
-			cur := m.agent.State().Model
+			cur := m.agent.Model
 			b.WriteString("current: " + cur.Provider + "/" + cur.ID + "\n")
 			for _, mod := range models {
 				b.WriteString("  " + mod.Provider + "/" + mod.ID)
@@ -135,10 +136,10 @@ func (m *Model) registerBuiltinCommands() {
 				return "usage: /name <title>", false
 			}
 			if m.session != nil && m.session.Path != "" {
-				_ = m.session.AppendMessage(session.Message{
+				_ = m.session.AppendMessage(communi.Message{
 					ID:        "name-" + time.Now().UTC().Format(time.RFC3339Nano),
-					Role:      string(keys.AgentRoleNotification),
-					Content:   "session name: " + title,
+					Role:      keys.AgentRoleNotification,
+					Content:   []*communi.ContentBlock{communi.NewTextContentBlock("session name: " + title)},
 					CreatedAt: time.Now().UTC(),
 					Metadata: map[string]any{
 						"type": "session_name",
@@ -155,7 +156,7 @@ func (m *Model) registerBuiltinCommands() {
 		Usage: "/tree",
 		Help:  "Show a lightweight conversation outline.",
 		Handle: func(m *Model, _ string) (string, bool) {
-			msgs := m.agent.State().Messages
+			msgs := m.agent.GetMessages()
 			if len(msgs) == 0 {
 				return "(empty)", false
 			}
@@ -172,7 +173,7 @@ func (m *Model) registerBuiltinCommands() {
 				if msgs[i].ID != "" {
 					line += " " + msgs[i].ID
 				}
-				content := strings.TrimSpace(msgs[i].Content)
+				content := strings.TrimSpace(msgs[i].ContentBlocksToText())
 				if content != "" {
 					if len(content) > 60 {
 						content = content[:60] + "…"

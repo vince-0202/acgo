@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/memory"
 	"strings"
 )
@@ -45,14 +46,14 @@ func (t *memoryRecallTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) (agent.ToolResult, error) {
+func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Query       string   `json:"query"`
 		MemoryTypes []string `json:"memory_types"`
 		TopK        float64  `json:"top_k"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	topK := int(params.TopK)
 	if topK <= 0 {
@@ -60,7 +61,7 @@ func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args 
 	}
 
 	if t == nil || t.manager == nil {
-		return agent.ToolResult{Content: "memory store not configured"}, nil
+		return communi.NewToolCallResult(toolCallID, "memory store not configured")
 	}
 
 	var mts []memory.MemoryType
@@ -78,10 +79,10 @@ func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args 
 	// Long-term recall does not require session_id isolation.
 	chunks, err := t.manager.Recall(ctx, params.Query, "", mts, topK)
 	if err != nil {
-		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	if len(chunks) == 0 {
-		return agent.ToolResult{Content: "no relevant memories found"}, nil
+		return communi.NewToolCallResult(toolCallID, "no relevant memories found")
 	}
 
 	var b strings.Builder
@@ -102,10 +103,10 @@ func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args 
 		}
 		b.WriteString("\n")
 	}
-	return agent.ToolResult{Content: strings.TrimSpace(b.String())}, nil
+	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(b.String()))
 }
 
-func NewMemoryRecallTool() agent.AgentTool {
+func NewMemoryRecallTool() harness.Tool {
 	mgr, err := memory.DefaultManager()
 	if err != nil {
 		// Keep tool creatable even if memory is not configured; execute returns

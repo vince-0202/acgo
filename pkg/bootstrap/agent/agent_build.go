@@ -1,8 +1,9 @@
-package bootstrap
+package agent
 
 import (
 	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/config"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/llm"
 	"github.com/vince-0202/acgo/pkg/log"
 	"github.com/vince-0202/acgo/pkg/memory"
@@ -14,14 +15,14 @@ import (
 type AgentBuildConfig struct {
 	Id        string
 	UseModel  string
-	UseTools  []agent.AgentTool
+	UseTools  []harness.Tool
 	UseMemory agent.MemoryWriter
 }
 
 func BuildAgent(settings *config.Settings, options ...AgentBuilderOption) *agent.Agent {
 	builder := AgentBuildConfig{
 		UseModel:  settings.Agent.DefaultModel,
-		UseTools:  []agent.AgentTool{},
+		UseTools:  []harness.Tool{},
 		UseMemory: nil,
 	}
 	for _, option := range options {
@@ -35,12 +36,15 @@ func BuildAgent(settings *config.Settings, options ...AgentBuilderOption) *agent
 		}
 	}
 
+	provider, module := loadProviderAndModule(builder)
+
 	ag := agent.New(builder.Id, agent.Options{
 		WorkDir:  filepath.Join(settings.WorkDir, builder.Id),
-		StreamFn: runtime.DefaultStreamFn,
+		Provider: provider,
+		Model:    module,
+		UseTools: builder.UseTools,
 		InitialState: agent.State{
-			Model: loadModule(builder),
-			Tools: builder.UseTools,
+			WorkDir: filepath.Join(settings.WorkDir, builder.Id),
 		},
 		MemoryWriter: builder.UseMemory,
 	})
@@ -52,12 +56,12 @@ func BuildAgent(settings *config.Settings, options ...AgentBuilderOption) *agent
 	return ag
 }
 
-func loadModule(builderConfig AgentBuildConfig) llm.Model {
-	var m llm.Model
-	if got, ok := runtime.GetModel(builderConfig.UseModel); ok {
-		m = got
+func loadProviderAndModule(builderConfig AgentBuildConfig) (llm.Provider, llm.Model) {
+	if modeGot, ok := runtime.GetModel(builderConfig.UseModel); ok {
+		provider, _ := runtime.GetProvider(modeGot.Provider)
+		return provider, modeGot
 	}
-	return m
+	return nil, llm.Model{}
 }
 
 type AgentBuilderOption func(*AgentBuildConfig)
@@ -67,7 +71,7 @@ func WithModel(model string) AgentBuilderOption {
 		config.UseModel = model
 	}
 }
-func WithTools(tools ...agent.AgentTool) AgentBuilderOption {
+func WithTools(tools ...harness.Tool) AgentBuilderOption {
 	return func(config *AgentBuildConfig) {
 		config.UseTools = append(config.UseTools, tools...)
 	}
@@ -79,7 +83,7 @@ func WithId(id string) AgentBuilderOption {
 }
 
 func WithDefaultTools() AgentBuilderOption {
-	builtinTools := []agent.AgentTool{
+	builtinTools := []harness.Tool{
 		tools.NewReadTool(),
 		tools.NewWriteTool(),
 		tools.NewBashTool(),

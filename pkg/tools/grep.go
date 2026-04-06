@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 const defaultGrepMaxResults = 50
@@ -45,14 +45,14 @@ func (t *grepTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) (agent.ToolResult, error) {
+func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Pattern    string  `json:"pattern"`
 		Path       string  `json:"path"`
 		MaxResults float64 `json:"max_results"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	root := params.Path
 	if root == "" {
@@ -65,7 +65,7 @@ func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 
 	re, err := regexp.Compile(params.Pattern)
 	if err != nil {
-		return agent.ToolResult{}, fmt.Errorf("invalid regex pattern: %w", err)
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 
 	var out strings.Builder
@@ -112,18 +112,18 @@ func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 		return nil
 	})
 	if walkErr != nil {
-		return agent.ToolResult{Content: walkErr.Error(), IsError: true}, nil
+		return communi.ErrorToolCallResult(toolCallID, walkErr)
 	}
 	if out.Len() == 0 {
-		return agent.ToolResult{Content: "no matches found"}, nil
+		return communi.NewToolCallResult(toolCallID, "no matches found")
 	}
 	if n >= maxResults {
 		fmt.Fprintf(&out, "\n(truncated at %d results)", maxResults)
 	}
-	return agent.ToolResult{Content: strings.TrimSuffix(out.String(), "\n")}, nil
+	return communi.NewToolCallResult(toolCallID, strings.TrimSuffix(out.String(), "\n"))
 }
 
 // NewGrepTool creates a new grep AgentTool.
-func NewGrepTool() agent.AgentTool {
+func NewGrepTool() harness.Tool {
 	return &grepTool{}
 }

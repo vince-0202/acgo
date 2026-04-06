@@ -246,10 +246,10 @@ func TestWaitForIdle(t *testing.T) {
 	if err := a.WaitForIdle(ctx); err != nil {
 		t.Errorf("WaitForIdle when idle: %v", err)
 	}
-	// When already idle, WaitForIdle returns nil even if ctx is cancelled (idle check is first).
+	// When already idle, WaitForIdle returns nil even if contextController is cancelled (idle check is first).
 	ctxDone, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := a.WaitForIdle(ctxDone); err != nil {
-		t.Errorf("WaitForIdle when idle with cancelled ctx: %v", err)
+		t.Errorf("WaitForIdle when idle with cancelled contextController: %v", err)
 	}
 }

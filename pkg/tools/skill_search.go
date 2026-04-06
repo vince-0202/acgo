@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/skills"
 	"os"
 	"strings"
@@ -36,7 +37,7 @@ func (t *skillSearchTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *skillSearchTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) (agent.ToolResult, error) {
+func (t *skillSearchTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Name    string `json:"name"`
 		WorkDir string `json:"work_dir"`
@@ -53,7 +54,7 @@ func (t *skillSearchTool) Execute(ctx context.Context, toolCallID string, args j
 	skillList, _ := skills.Load(workDir)
 	if strings.TrimSpace(params.Name) == "" {
 		if len(skillList) == 0 {
-			return agent.ToolResult{Content: "no skills found"}, nil
+			return communi.NewToolCallResult(toolCallID, "No skill found")
 		}
 		var b strings.Builder
 		b.WriteString("skills:\n")
@@ -66,32 +67,30 @@ func (t *skillSearchTool) Execute(ctx context.Context, toolCallID string, args j
 				b.WriteString("    path: " + strings.TrimSpace(s.Path) + "\n")
 			}
 		}
-		return agent.ToolResult{Content: strings.TrimSpace(b.String())}, nil
+		return communi.NewToolCallResult(toolCallID, strings.TrimSpace(b.String()))
 	}
 
 	name := strings.TrimSpace(params.Name)
 	for _, s := range skillList {
 		if s.Name == name {
 			if strings.TrimSpace(s.Path) == "" {
-				return agent.ToolResult{Content: "skill found but path missing: " + name, IsError: true}, nil
+				return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("skill found but path missing: %s", name))
 			}
 			data, err := os.ReadFile(s.Path)
 			if err != nil {
-				return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+				return communi.ErrorToolCallResult(toolCallID, err)
 			}
-			return agent.ToolResult{
-				Content: string(data),
-				Metadata: map[string]any{
-					"name": name,
-					"path": s.Path,
-				},
-			}, nil
+			return communi.NewToolCallResultWithMetaData(
+				toolCallID,
+				string(data),
+				map[string]any{"name": name, "path": s.Path},
+			)
 		}
 	}
-	return agent.ToolResult{Content: fmt.Sprintf("skill not found: %s", name), IsError: true}, nil
+	return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("skill not found: %s", name))
 }
 
 // NewSkillSearchTool creates a new skill_search AgentTool.
-func NewSkillSearchTool() agent.AgentTool {
+func NewSkillSearchTool() harness.Tool {
 	return &skillSearchTool{}
 }

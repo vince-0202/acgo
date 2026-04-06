@@ -3,10 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"os/exec"
-
-	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 type bashTool struct{}
@@ -31,7 +30,7 @@ func (t *bashTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) (agent.ToolResult, error) {
+func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Command string `json:"command"`
 	}
@@ -40,26 +39,19 @@ func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 		if json.Unmarshal(args, &raw) == nil && raw != "" {
 			params.Command = raw
 		} else {
-			return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+			return communi.ErrorToolCallResult(toolCallID, err)
 		}
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-lc", params.Command)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		content := string(out)
-		if content != "" {
-			content += "\n"
-		}
-		content += err.Error()
-		return agent.ToolResult{Content: content, IsError: true}, nil
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
-	return agent.ToolResult{
-		Content: string(out),
-	}, nil
+	return communi.NewToolCallResult(toolCallID, string(out))
 }
 
 // NewBashTool creates a new bash AgentTool.
-func NewBashTool() agent.AgentTool {
+func NewBashTool() harness.Tool {
 	return &bashTool{}
 }

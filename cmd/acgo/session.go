@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/vince-0202/acgo/pkg/bootstrap"
+	"github.com/vince-0202/acgo/pkg/bootstrap/setting"
 	"github.com/vince-0202/acgo/pkg/session"
 
 	"github.com/spf13/cobra"
@@ -18,7 +18,7 @@ var sessionListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List session files",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		settings, err := bootstrap.LoadAndRuntimeInit()
+		settings, err := setting.LoadAndRuntimeInit()
 		if err != nil {
 			return err
 		}

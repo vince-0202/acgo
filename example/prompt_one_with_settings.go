@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/vince-0202/acgo/pkg/agent"
-	"github.com/vince-0202/acgo/pkg/bootstrap"
+	"github.com/vince-0202/acgo/pkg/bootstrap/agent"
+	"github.com/vince-0202/acgo/pkg/bootstrap/setting"
+	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/config"
 )
 
@@ -18,7 +19,7 @@ func main() {
 // load settings, build an agent, run one prompt, and print the reply.
 func PromptOne() error {
 	//load config from ${HOME}/.acgo/settings.yaml
-	settings, err := bootstrap.LoadAndRuntimeInit(
+	settings, err := setting.LoadAndRuntimeInit(
 		config.WithDirectName(".acgo"),
 		config.WithName("settings"),
 	)
@@ -27,18 +28,18 @@ func PromptOne() error {
 	}
 
 	//build agent with settings and other options
-	ag := bootstrap.BuildAgent(
+	ag := agent.BuildAgent(
 		settings,
-		bootstrap.WithId("example-bootstrap-agent"),
-		bootstrap.WithDefaultTools(),
+		agent.WithId("example-bootstrap-agent"),
+		agent.WithDefaultTools(),
 	)
 	if ag == nil {
 		return fmt.Errorf("build agent failed")
 	}
 
-	unsub := ag.Subscribe(func(e agent.Event) {
+	unsub := ag.Subscribe(func(e communi.AgentEvent) {
 		switch e.Type {
-		case agent.EventMessageEnd:
+		case communi.EventMessageEnd:
 			fmt.Printf("%s: %s\n", e.Message.Role, e.Message.Content)
 		}
 	})

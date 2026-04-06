@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"os"
-
-	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 type writeTool struct{}
@@ -35,23 +35,24 @@ func (t *writeTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) (agent.ToolResult, error) {
+func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return agent.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
-		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+		return communi.ErrorToolCallResult(toolCallID, err)
 	}
-	return agent.ToolResult{
-		Content: fmt.Sprintf("wrote %d bytes to %s", len(params.Content), params.Path),
-	}, nil
+	return communi.NewToolCallResult(
+		toolCallID,
+		fmt.Sprintf("wrote %d bytes to %s", len(params.Content), params.Path),
+	)
 }
 
 // NewWriteTool creates a new write AgentTool.
-func NewWriteTool() agent.AgentTool {
+func NewWriteTool() harness.Tool {
 	return &writeTool{}
 }

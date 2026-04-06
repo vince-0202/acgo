@@ -2,33 +2,49 @@ package session
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/utils"
 	"os"
 	"path/filepath"
 	"sort"
-	"time"
-
-	"github.com/vince-0202/acgo/pkg/keys"
-	"github.com/vince-0202/acgo/pkg/utils"
 )
 
-// Message is a single entry in a session log.
-type Message struct {
-	ID         string         `json:"id"`
-	ParentID   string         `json:"parent_id,omitempty"`
-	Role       string         `json:"role"`
-	Content    string         `json:"content"`
-	Thinking   string         `json:"thinking,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	IsError    bool           `json:"is_error,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+type sessionIDContextKey struct{}
+
+var sessionIDKey sessionIDContextKey
+
+// WithSessionID stores the current session identifier in context so memory tools
+// and writers can scope writes/reads by session.
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, sessionIDKey, sessionID)
+}
+
+// SessionIDFromContext tries to read session_id from ctx.
+func SessionIDFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	v := ctx.Value(sessionIDKey)
+	if v == nil {
+		return "", false
+	}
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return "", false
+	}
+	return s, true
 }
 
 // Session manages appending and reading messages from a JSONL file.
 type Session struct {
 	Path    string
-	Message []Message
+	Message []communi.Message
 }
 
 // Create creates a new session file at path (overwriting if it exists).
@@ -45,7 +61,7 @@ func Open(path string) *Session {
 }
 
 // AppendMessage appends a message as a single JSON line.
-func (s *Session) AppendMessage(msg Message) error {
+func (s *Session) AppendMessage(msg communi.Message) error {
 	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
@@ -67,10 +83,10 @@ func (s *Session) LoadMessage() error {
 	}
 	defer f.Close()
 
-	var result []Message
+	var result []communi.Message
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		var msg Message
+		var msg communi.Message
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
 		}
