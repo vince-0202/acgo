@@ -3,15 +3,14 @@ package tui
 import (
 	"fmt"
 	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/runtime"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/vince-0202/acgo/pkg/contextfile"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/session"
-	"github.com/vince-0202/acgo/pkg/skills"
 )
 
 func (m *Model) registerCommand(spec commandSpec) {
@@ -215,7 +214,7 @@ func (m *Model) registerBuiltinCommands() {
 		Usage: "/system",
 		Help:  "Show current system prompt summary and loaded context files.",
 		Handle: func(m *Model, _ string) (string, bool) {
-			p := strings.TrimSpace(m.agent.State().SystemPrompt)
+			p := strings.TrimSpace(m.agent.SystemPrompt())
 			if p == "" {
 				return "(system prompt empty)", false
 			}
@@ -229,7 +228,7 @@ func (m *Model) registerBuiltinCommands() {
 				b.WriteString(fmt.Sprintf("agent: %v \n", ag.Id()))
 				b.WriteString(fmt.Sprintf("system prompt: %d chars\n", len(p)))
 				b.WriteString(summary + "\n")
-				contextPaths := ag.State().ContextFile.Paths
+				contextPaths := ag.ContextFilePath()
 				if len(contextPaths) > 0 {
 					b.WriteString("\nloaded context files:\n")
 					for _, cp := range contextPaths {
@@ -262,7 +261,7 @@ func (m *Model) registerBuiltinCommands() {
 		Usage: "/skills",
 		Help:  "List available skills (from disk).",
 		Handle: func(m *Model, _ string) (string, bool) {
-			skillList, _ := skills.Load(m.workDir)
+			skillList, _ := harness.Load(m.workDir)
 			if len(skillList) == 0 {
 				return "no skills loaded (add SKILL.md in ~/.acgo/skills/ or .acgo/skills/)", false
 			}
@@ -290,11 +289,9 @@ func (m *Model) registerBuiltinCommands() {
 
 			result := strings.Builder{}
 			for _, ag := range runtime.ListAgents() {
-				ctxResult := contextfile.Load(ag.State().WorkDir)
-				ag.SetContextFile(ctxResult)
-				ag.SetSystemPrompt(ctxResult.Prompt)
-				merged := strings.TrimSpace(m.agent.State().SystemPrompt)
-				agReloadResult := fmt.Sprintf("reloaded: %d file(s), system prompt %d chars for agent: %v.\n", len(ctxResult.Paths), len(merged), ag.Id())
+				ag.LoadContext()
+				merged := strings.TrimSpace(m.agent.SystemPrompt())
+				agReloadResult := fmt.Sprintf("reloaded: %d file(s), system prompt %d chars for agent: %v.\n", len(ag.ContextFilePath()), len(merged), ag.Id())
 				result.WriteString(agReloadResult)
 			}
 

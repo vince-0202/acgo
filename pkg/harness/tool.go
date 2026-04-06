@@ -12,42 +12,6 @@ import (
 	"strings"
 )
 
-// ErrUnknownProvider is returned when no provider is registered for a given name.
-type ErrUnknownProvider string
-
-func (e ErrUnknownProvider) Error() string {
-	return fmt.Sprintf("unknown provider: %s", string(e))
-}
-
-// ToolValidationError is returned when tool arguments do not satisfy the tool's JSON Schema.
-// Prefer returning this from the validation layer; the agent turns it into an isError toolResult
-// for the model (see executePendingTools), rather than aborting the turn.
-type ToolValidationError struct {
-	ToolName string
-	Details  []string
-}
-
-func (e *ToolValidationError) Error() string {
-	if e == nil {
-		return ""
-	}
-	msg := fmt.Sprintf("tool argument validation failed for %s", e.ToolName)
-	if len(e.Details) == 0 {
-		return msg
-	}
-	return msg + ": " + strings.Join(e.Details, "; ")
-}
-
-// ToolUpdateFunc is used by tools to report streaming progress.
-type ToolUpdateFunc func(update ToolUpdate)
-
-// ToolUpdate describes an incremental update from a running tool.
-type ToolUpdate struct {
-	Text     string         // human readable update text
-	Progress float64        // optional progress 0..1
-	Metadata map[string]any // arbitrary metadata
-}
-
 // Tool is the interface implemented by all tools usable by the Agent.
 type Tool interface {
 	Name() string
@@ -57,50 +21,53 @@ type Tool interface {
 	Execute(ctx context.Context, toolCallID string, args json.RawMessage, update ToolUpdateFunc) communi.ToolCallResult
 }
 
-func NewToolController(agentId string, emf func(e communi.AgentEvent), amf func(msg ...communi.Message), tools ...Tool) *ToolController {
+func NewToolController(agentId string, emf func(e communi.AgentEvent), tools ...Tool) *ToolController {
 	toolMap := make(map[string]Tool)
 	for _, tool := range tools {
 		toolMap[tool.Name()] = tool
 	}
 	return &ToolController{
-		agentId:           agentId,
-		tools:             toolMap,
-		pendingToolCalls:  make([]communi.ToolCallRequest, 0),
-		emitFunc:          emf,
-		appendMessageFunc: amf,
+		agentId:          agentId,
+		tools:            toolMap,
+		pendingToolCalls: make([]communi.ToolCallRequest, 0),
+		emitFunc:         emf,
 	}
 }
 
 type ToolController struct {
 	agentId           string
 	tools             map[string]Tool
+	contextController *ContextController
 	pendingToolCalls  []communi.ToolCallRequest
 	emitFunc          func(e communi.AgentEvent)
-	appendMessageFunc func(msg ...communi.Message)
 }
 
-func (c *ToolController) CleanPendingTool() {
-	c.pendingToolCalls = make([]communi.ToolCallRequest, 0)
+func (tc *ToolController) Load() {
+
 }
 
-func (c *ToolController) Execute(ctx context.Context) {
-	if c.pendingToolCalls == nil {
+func (tc *ToolController) CleanPendingTool() {
+	tc.pendingToolCalls = make([]communi.ToolCallRequest, 0)
+}
+
+func (tc *ToolController) Execute(ctx context.Context) {
+	if tc.pendingToolCalls == nil {
 		return
 	}
-	calls := c.pendingToolCalls
-	c.pendingToolCalls = nil
+	calls := tc.pendingToolCalls
+	tc.pendingToolCalls = nil
 
 	for _, call := range calls {
 		args := normalizeToolCallArguments(call.Arguments)
-		tool, ok := c.FindTool(call.Name)
+		tool, ok := tc.FindTool(call.Name)
 		if !ok {
 			toolMsg := communi.NewToolCallErrorMessage(
 				call.ID, ErrUnknownProvider(call.Name),
 			)
-			c.appendMessageFunc(toolMsg)
-			c.emitFunc(communi.AgentEvent{
+			tc.contextController.AppendMessage(toolMsg)
+			tc.emitFunc(communi.AgentEvent{
 				Type:       communi.EventToolExecutionEnd,
-				AgentID:    c.agentId,
+				AgentID:    tc.agentId,
 				ToolName:   call.Name,
 				ToolCallID: call.ID,
 				ToolArgs:   args,
@@ -110,9 +77,9 @@ func (c *ToolController) Execute(ctx context.Context) {
 			})
 		}
 		args = CoerceToolArguments(tool.JSONSchema(), args)
-		c.emitFunc(communi.AgentEvent{
+		tc.emitFunc(communi.AgentEvent{
 			Type:       communi.EventToolExecutionStart,
-			AgentID:    c.agentId,
+			AgentID:    tc.agentId,
 			ToolName:   tool.Name(),
 			ToolCallID: call.ID,
 			ToolArgs:   args,
@@ -121,10 +88,10 @@ func (c *ToolController) Execute(ctx context.Context) {
 		if err := ValidateToolArguments(tool.Name(), tool.JSONSchema(), args); err != nil {
 			// Validation failures are delivered as tool results with IsError so the model can retry.
 			toolMsg := communi.NewToolCallErrorMessage(call.ID, err)
-			c.appendMessageFunc(toolMsg)
-			c.emitFunc(communi.AgentEvent{
+			tc.contextController.AppendMessage(toolMsg)
+			tc.emitFunc(communi.AgentEvent{
 				Type:       communi.EventToolExecutionEnd,
-				AgentID:    c.agentId,
+				AgentID:    tc.agentId,
 				ToolName:   tool.Name(),
 				ToolCallID: call.ID,
 				ToolArgs:   args,
@@ -138,10 +105,10 @@ func (c *ToolController) Execute(ctx context.Context) {
 		result := tool.Execute(ctx, call.ID, args, nil)
 		if result.IsError() {
 			toolMsg := communi.NewToolCallErrorMessage(call.ID, result.Error)
-			c.appendMessageFunc(toolMsg)
-			c.emitFunc(communi.AgentEvent{
+			tc.contextController.AppendMessage(toolMsg)
+			tc.emitFunc(communi.AgentEvent{
 				Type:       communi.EventToolExecutionEnd,
-				AgentID:    c.agentId,
+				AgentID:    tc.agentId,
 				ToolName:   tool.Name(),
 				ToolCallID: call.ID,
 				ToolArgs:   args,
@@ -162,10 +129,10 @@ func (c *ToolController) Execute(ctx context.Context) {
 			IsError:  result.IsError(),
 			Metadata: result.Metadata,
 		}
-		c.appendMessageFunc(toolMsg)
-		c.emitFunc(communi.AgentEvent{
+		tc.contextController.AppendMessage(toolMsg)
+		tc.emitFunc(communi.AgentEvent{
 			Type:       communi.EventToolExecutionEnd,
-			AgentID:    c.agentId,
+			AgentID:    tc.agentId,
 			ToolName:   tool.Name(),
 			ToolCallID: call.ID,
 			ToolArgs:   args,
@@ -177,38 +144,38 @@ func (c *ToolController) Execute(ctx context.Context) {
 	}
 }
 
-func (c ToolController) GetPendingToolCalls() []communi.ToolCallRequest {
-	return c.pendingToolCalls
+func (tc *ToolController) GetPendingToolCalls() []communi.ToolCallRequest {
+	return tc.pendingToolCalls
 }
 
-func (c *ToolController) FindTool(name string) (tool Tool, ok bool) {
-	tool, ok = c.tools[name]
+func (tc *ToolController) FindTool(name string) (tool Tool, ok bool) {
+	tool, ok = tc.tools[name]
 	return
 }
 
 // UpsertPendingToolCall tracks the latest version of a ToolCall by ID.
 // Stored Arguments are always normalized so they are non-nil and usable for execution.
-func (c *ToolController) UpsertPendingToolCall(call communi.ToolCallRequest) {
+func (tc *ToolController) UpsertPendingToolCall(call communi.ToolCallRequest) {
 	normalized := communi.ToolCallRequest{
 		ID:        call.ID,
 		Name:      call.Name,
 		Arguments: llm.NormalizeToolCallArguments(call.Arguments),
 	}
-	for i := range c.pendingToolCalls {
-		if c.pendingToolCalls[i].ID == call.ID {
-			c.pendingToolCalls[i] = normalized
+	for i := range tc.pendingToolCalls {
+		if tc.pendingToolCalls[i].ID == call.ID {
+			tc.pendingToolCalls[i] = normalized
 			return
 		}
 	}
-	c.pendingToolCalls = append(c.pendingToolCalls, normalized)
+	tc.pendingToolCalls = append(tc.pendingToolCalls, normalized)
 }
 
-func (c *ToolController) GetToolSchemas() []communi.ToolSchema {
-	if len(c.tools) == 0 {
+func (tc *ToolController) GetToolSchemas() []communi.ToolSchema {
+	if len(tc.tools) == 0 {
 		return nil
 	}
-	out := make([]communi.ToolSchema, 0, len(c.tools))
-	for _, t := range c.tools {
+	out := make([]communi.ToolSchema, 0, len(tc.tools))
+	for _, t := range tc.tools {
 		out = append(out, communi.ToolSchema{
 			Name:        t.Name(),
 			Description: t.Description(),
@@ -249,18 +216,18 @@ func validateToolArguments(toolName string, schema map[string]any, args json.Raw
 	return &ToolValidationError{ToolName: toolName, Details: details}
 }
 
-func (c *ToolController) RegistryTool(ts ...Tool) {
-	if c.tools == nil {
-		c.tools = make(map[string]Tool)
+func (tc *ToolController) RegistryTool(ts ...Tool) {
+	if tc.tools == nil {
+		tc.tools = make(map[string]Tool)
 	}
 	for _, t := range ts {
-		c.tools[t.Name()] = t
+		tc.tools[t.Name()] = t
 	}
 }
 
-func (c *ToolController) Tools() []Tool {
-	res := make([]Tool, 0, len(c.tools))
-	for _, tool := range c.tools {
+func (tc *ToolController) Tools() []Tool {
+	res := make([]Tool, 0, len(tc.tools))
+	for _, tool := range tc.tools {
 		res = append(res, tool)
 	}
 	return res
@@ -385,4 +352,40 @@ func requiredKeys(schema map[string]any) []string {
 	default:
 		return nil
 	}
+}
+
+// ErrUnknownProvider is returned when no provider is registered for a given name.
+type ErrUnknownProvider string
+
+func (e ErrUnknownProvider) Error() string {
+	return fmt.Sprintf("unknown provider: %s", string(e))
+}
+
+// ToolValidationError is returned when tool arguments do not satisfy the tool's JSON Schema.
+// Prefer returning this from the validation layer; the agent turns it into an isError toolResult
+// for the model (see executePendingTools), rather than aborting the turn.
+type ToolValidationError struct {
+	ToolName string
+	Details  []string
+}
+
+func (e *ToolValidationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	msg := fmt.Sprintf("tool argument validation failed for %s", e.ToolName)
+	if len(e.Details) == 0 {
+		return msg
+	}
+	return msg + ": " + strings.Join(e.Details, "; ")
+}
+
+// ToolUpdateFunc is used by tools to report streaming progress.
+type ToolUpdateFunc func(update ToolUpdate)
+
+// ToolUpdate describes an incremental update from a running tool.
+type ToolUpdate struct {
+	Text     string         // human readable update text
+	Progress float64        // optional progress 0..1
+	Metadata map[string]any // arbitrary metadata
 }

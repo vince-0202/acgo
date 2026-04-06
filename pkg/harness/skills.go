@@ -1,7 +1,7 @@
 // Package skills loads SKILL.md files from ~/.acgo/skills and .acgo/skills
 // (from workDir upward), parses YAML frontmatter + body, and merges them
 // into the agent system prompt (Cursor/agentskills-style).
-package skills
+package harness
 
 import (
 	"os"

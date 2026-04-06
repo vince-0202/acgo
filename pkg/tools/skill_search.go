@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/harness"
-	"github.com/vince-0202/acgo/pkg/skills"
 	"os"
 	"strings"
 )
@@ -51,7 +50,7 @@ func (t *skillSearchTool) Execute(ctx context.Context, toolCallID string, args j
 		}
 	}
 
-	skillList, _ := skills.Load(workDir)
+	skillList, _ := harness.Load(workDir)
 	if strings.TrimSpace(params.Name) == "" {
 		if len(skillList) == 0 {
 			return communi.NewToolCallResult(toolCallID, "No skill found")

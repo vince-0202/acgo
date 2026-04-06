@@ -3,11 +3,9 @@ package agent
 import (
 	"context"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/contextfile"
 	"github.com/vince-0202/acgo/pkg/errors"
 	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/utils"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -66,23 +64,22 @@ type listenerSlot struct {
 // New creates a new Agent with the given options.
 func New(id string, opts Options) *Agent {
 	a := &Agent{
-		id:                id,
-		Provider:          opts.Provider,
-		Model:             opts.Model,
-		state:             opts.InitialState,
-		memoryWriter:      opts.MemoryWriter,
-		contextController: harness.NewContextController(id),
+		id:           id,
+		Provider:     opts.Provider,
+		Model:        opts.Model,
+		state:        opts.InitialState,
+		memoryWriter: opts.MemoryWriter,
 	}
 
 	//register the other controller
-	a.toolController = harness.NewToolController(a.id, a.emit, a.contextController.AppendMessage,
+	//first registry context controller
+	a.contextController = harness.NewContextController(id, opts.WorkDir)
+	a.LoadContext()
+
+	a.toolController = harness.NewToolController(a.id, a.emit,
 		opts.UseTools...,
 	)
 	a.memoryController = harness.NewMemoryController()
-
-	ctxResult := contextfile.Load(filepath.Join(opts.WorkDir, id))
-	a.state.ContextFile = ctxResult
-	a.state.SystemPrompt = ctxResult.Prompt
 	a.state.WorkDir = opts.WorkDir
 
 	return a
@@ -122,16 +119,6 @@ func (a *Agent) emit(e communi.AgentEvent) {
 	for _, slot := range a.listeners {
 		slot.l(e)
 	}
-}
-
-// SetSystemPrompt updates the system prompt.
-func (a *Agent) SetSystemPrompt(prompt string) {
-	a.state.SystemPrompt = prompt
-}
-
-// SetContextFile updates the ContextController file index.
-func (a *Agent) SetContextFile(cf *contextfile.Status) {
-	a.state.ContextFile = cf
 }
 
 // SetModel updates the model.
@@ -410,14 +397,23 @@ func (a *Agent) GetMessages() []communi.Message {
 	return a.contextController.Messages
 }
 
+func (a *Agent) LoadContext() {
+	a.contextController.Load()
+}
+
+func (a *Agent) SystemPrompt() string {
+	return a.contextController.Prompt
+}
+
+func (a *Agent) ContextFilePath() []string {
+	return a.contextController.Paths
+}
+
 // State AgentState holds the mutable state of an Agent instance.
 type State struct {
-	WorkDir       string
-	SystemPrompt  string
-	ThinkingLevel keys.ThinkingLevel
+	WorkDir string
 
-	//Messages      []Message
-	ContextFile *contextfile.Status
+	ThinkingLevel keys.ThinkingLevel
 
 	IsStreaming   bool
 	StreamMessage *communi.Message
