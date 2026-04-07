@@ -37,8 +37,6 @@ func runWithTView(m *Model) error {
 	subInputs := map[string]*tview.InputField{}
 	subPanels := map[string]*tview.Flex{}
 	subInputBound := map[string]bool{}
-	scrollOffset := map[string]int{}
-	scrollLocked := map[string]bool{}
 	focusKeys := []string{"main"}
 	activeKey := "main"
 
@@ -101,34 +99,25 @@ func runWithTView(m *Model) error {
 		applyFocusStyle()
 	}
 
-	focusedView := func() (*tview.TextView, string) {
+	focusedView := func() *tview.TextView {
 		if activeKey == "main" {
-			return transcript, "main"
+			return transcript
 		}
 		tv, _, _ := ensureSubPanel(activeKey)
-		return tv, activeKey
+		return tv
 	}
 
-	clampOffset := func(text string, off int) int {
+	clampOffset := func(off int) int {
 		if off < 0 {
 			return 0
-		}
-		max := len(strings.Split(text, "\n")) - 1
-		if max < 0 {
-			max = 0
-		}
-		if off > max {
-			return max
 		}
 		return off
 	}
 
 	scrollFocused := func(delta int) {
-		tv, key := focusedView()
-		text := tv.GetText(false)
-		next := clampOffset(text, scrollOffset[key]+delta)
-		scrollOffset[key] = next
-		scrollLocked[key] = true
+		tv := focusedView()
+		prev, _ := tv.GetScrollOffset()
+		next := clampOffset(prev + delta)
 		tv.ScrollTo(next, 0)
 	}
 
@@ -157,13 +146,8 @@ func runWithTView(m *Model) error {
 			_ = in
 			_ = sp
 			tv.SetText(renderTranscriptBody(panel.history, panel.streamingThinking, panel.streamingContent))
-			if scrollLocked[sid] {
-				scrollOffset[sid] = clampOffset(tv.GetText(false), scrollOffset[sid])
-				tv.ScrollTo(scrollOffset[sid], 0)
-			} else {
-				tv.ScrollToEnd()
-				scrollOffset[sid] = 1 << 30
-			}
+			// Always follow latest content on refresh.
+			tv.ScrollToEnd()
 		}
 		for sid := range subViews {
 			keep := false
@@ -182,8 +166,6 @@ func runWithTView(m *Model) error {
 			delete(subPanels, sid)
 			delete(subInputBound, sid)
 			delete(subStreaming, sid)
-			delete(scrollOffset, sid)
-			delete(scrollLocked, sid)
 		}
 		applyFocusStyle()
 	}
@@ -191,13 +173,8 @@ func runWithTView(m *Model) error {
 	refresh := func() {
 		body := renderTranscriptBody(m.history, m.streamingThinking, m.streamingContent)
 		transcript.SetText(body)
-		if scrollLocked["main"] {
-			scrollOffset["main"] = clampOffset(transcript.GetText(false), scrollOffset["main"])
-			transcript.ScrollTo(scrollOffset["main"], 0)
-		} else {
-			transcript.ScrollToEnd()
-			scrollOffset["main"] = 1 << 30
-		}
+		// Always follow latest content on refresh.
+		transcript.ScrollToEnd()
 		status.SetText(m.statusLine())
 		tokens.SetText(m.tokenSummaryLine())
 		refreshSubPanels()
@@ -480,10 +457,10 @@ func runWithTView(m *Model) error {
 		switch action {
 		case tview.MouseScrollUp:
 			scrollFocused(-3)
-			return nil, action
+			return nil, tview.MouseConsumed
 		case tview.MouseScrollDown:
 			scrollFocused(3)
-			return nil, action
+			return nil, tview.MouseConsumed
 		}
 		return event, action
 	})
@@ -521,13 +498,8 @@ func runWithTView(m *Model) error {
 				subInputBound[sid] = true
 			}
 			tv.SetText(renderTranscriptBody(panel.history, panel.streamingThinking, panel.streamingContent))
-			if scrollLocked[sid] {
-				scrollOffset[sid] = clampOffset(tv.GetText(false), scrollOffset[sid])
-				tv.ScrollTo(scrollOffset[sid], 0)
-			} else {
-				tv.ScrollToEnd()
-				scrollOffset[sid] = 1 << 30
-			}
+			// Always follow latest content on refresh.
+			tv.ScrollToEnd()
 		}
 		for sid := range subViews {
 			keep := false
@@ -546,8 +518,6 @@ func runWithTView(m *Model) error {
 			delete(subPanels, sid)
 			delete(subInputBound, sid)
 			delete(subStreaming, sid)
-			delete(scrollOffset, sid)
-			delete(scrollLocked, sid)
 		}
 		applyFocusStyle()
 	}
