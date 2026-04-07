@@ -21,16 +21,17 @@ type Tool interface {
 	Execute(ctx context.Context, toolCallID string, args json.RawMessage, update ToolUpdateFunc) communi.ToolCallResult
 }
 
-func NewToolController(agentId string, emf func(e communi.AgentEvent), tools ...Tool) *ToolController {
+func NewToolController(agentId string, cc *ContextController, emf func(e communi.AgentEvent), tools ...Tool) *ToolController {
 	toolMap := make(map[string]Tool)
 	for _, tool := range tools {
 		toolMap[tool.Name()] = tool
 	}
 	return &ToolController{
-		agentId:          agentId,
-		tools:            toolMap,
-		pendingToolCalls: make([]communi.ToolCallRequest, 0),
-		emitFunc:         emf,
+		agentId:           agentId,
+		tools:             toolMap,
+		contextController: cc,
+		pendingToolCalls:  make([]communi.ToolCallRequest, 0),
+		emitFunc:          emf,
 	}
 }
 
@@ -51,6 +52,9 @@ func (tc *ToolController) CleanPendingTool() {
 }
 
 func (tc *ToolController) Execute(ctx context.Context) {
+	if tc == nil || tc.contextController == nil {
+		return
+	}
 	if tc.pendingToolCalls == nil {
 		return
 	}

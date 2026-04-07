@@ -1,6 +1,6 @@
-// Package skills loads SKILL.md files from ~/.acgo/skills and .acgo/skills
-// (from workDir upward), parses YAML frontmatter + body, and merges them
-// into the agent system prompt (Cursor/agentskills-style).
+// Skills: two layers — system ~/.acgo/skills and project <cwd>/.acgo/skills —
+// each holds subfolders named <skill-name>/SKILL.md. YAML frontmatter + body
+// are parsed; full text is merged via SkillsController (ContextController.Load).
 package harness
 
 import (
@@ -20,20 +20,74 @@ type Skill struct {
 	Path        string // path to SKILL.md for debugging/listing
 }
 
-// Load discovers and parses skills from global (~/.acgo/skills) and
-// project (.acgo/skills in dirs from root toward workDir).
-// Later directories override earlier for the same skill name.
-// Returns skills (deduplicated by name, project overrides global) and paths of loaded files.
+// SkillsController discovers skills from disk and merges them into the system prompt.
+// It mirrors the controller pattern used elsewhere in harness (e.g. ContextController.Load).
+type SkillsController struct {
+	workDir string
+	Skills  []Skill
+	Paths   []string
+}
+
+// NewSkillsController creates a controller for the given working directory
+// (typically process CWD so project .acgo/skills is discovered).
+func NewSkillsController(workDir string) *SkillsController {
+	return &SkillsController{workDir: workDir}
+}
+
+// Load reads system (~/.acgo/skills) then project (<workDir>/.acgo/skills).
+// Project skills override system skills when the name collides.
+func (sc *SkillsController) Load() {
+	if sc == nil {
+		return
+	}
+	sc.Skills, sc.Paths = Load(sc.workDir)
+}
+
+// SystemPrompt appends a "## Skills" section with the full body of each SKILL.md
+// so the model has skill instructions in context without a separate tool.
+func (sc *SkillsController) SystemPrompt() string {
+	var b strings.Builder
+	b.WriteString("\n\n## Skills\n\n")
+	b.WriteString("Two layers: (1) system `~/.acgo/skills/<skill-name>/SKILL.md`; ")
+	b.WriteString("(2) project `<project-root>/.acgo/skills/<skill-name>/SKILL.md`. ")
+	b.WriteString("Project skills override system skills for the same name. ")
+	b.WriteString("Apply a skill when it matches the user's task.\n\n")
+	if sc == nil || len(sc.Skills) == 0 {
+		b.WriteString("(none)\n")
+		return b.String()
+	}
+	for i, s := range sc.Skills {
+		if i > 0 {
+			b.WriteString("\n---\n\n")
+		}
+		b.WriteString("### Skill: " + s.Name + "\n")
+		if strings.TrimSpace(s.Description) != "" {
+			b.WriteString("**Summary:** " + strings.TrimSpace(s.Description) + "\n\n")
+		}
+		if strings.TrimSpace(s.Path) != "" {
+			b.WriteString("**Source:** `" + strings.TrimSpace(s.Path) + "`\n\n")
+		}
+		b.WriteString(strings.TrimSpace(s.Content))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// Load discovers skills from two directories only:
+//  1. system:  ~/.acgo/skills  (user home)
+//  2. project: <workDir>/.acgo/skills  (typically current project root / cwd)
+//
+// Same skill name in project overrides system. Returns merged list and loaded file paths.
 func Load(workDir string) ([]Skill, []string) {
 	byName := make(map[string]Skill)
 	var paths []string
 
 	home, _ := os.UserHomeDir()
-	globalSkillsDir := filepath.Join(home, ".acgo", "skills")
-	collectSkillsFromDir(globalSkillsDir, byName, &paths)
+	systemSkillsDir := filepath.Join(home, ".acgo", "skills")
+	collectSkillsFromDir(systemSkillsDir, byName, &paths)
 
-	for _, d := range dirsFromRootToCwd(workDir) {
-		projectSkillsDir := filepath.Join(d, ".acgo", "skills")
+	if root := absProjectRoot(workDir); root != "" {
+		projectSkillsDir := filepath.Join(root, ".acgo", "skills")
 		collectSkillsFromDir(projectSkillsDir, byName, &paths)
 	}
 
@@ -155,56 +209,16 @@ func parseFrontmatter(s string) (name, description string) {
 	return name, description
 }
 
-// dirsFromRootToCwd returns directories from filesystem root toward workDir
-// so that workDir is last (project overrides).
-func dirsFromRootToCwd(workDir string) []string {
-	abs, err := filepath.Abs(workDir)
+// absProjectRoot returns a clean absolute path for the project directory used
+// to resolve .acgo/skills. Empty workDir yields "".
+func absProjectRoot(workDir string) string {
+	s := strings.TrimSpace(workDir)
+	if s == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(s)
 	if err != nil || abs == "" {
-		return nil
+		return ""
 	}
-	abs = filepath.Clean(abs)
-	var parts []string
-	for {
-		parts = append(parts, abs)
-		parent := filepath.Dir(abs)
-		if parent == abs {
-			break
-		}
-		abs = parent
-	}
-	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
-		parts[i], parts[j] = parts[j], parts[i]
-	}
-	return parts
-}
-
-// MergePrompt appends an "Available skills" section to existingPrompt.
-// It intentionally does NOT inline full skill content; the model should use tools
-// (e.g. list/read) to open the referenced SKILL.md paths on demand.
-func MergePrompt(existingPrompt string, skillList []Skill) string {
-	var b strings.Builder
-	b.WriteString(strings.TrimSpace(existingPrompt))
-	b.WriteString("\n\n## Available skills\n\n")
-	b.WriteString("Skills are stored as folders containing a SKILL.md.\n")
-	b.WriteString("Base paths:\n")
-	b.WriteString("- ~/.acgo/skills/<skill-name>/SKILL.md\n")
-	b.WriteString("- .acgo/skills/<skill-name>/SKILL.md (from project root up to current workdir)\n\n")
-	b.WriteString("Do NOT assume skill details from the title/description. If you need a skill, use tools to open its SKILL.md path and follow it.\n\n")
-	if len(skillList) == 0 {
-		b.WriteString("(none)\n")
-		return b.String()
-	}
-	for i, s := range skillList {
-		if i > 0 {
-			b.WriteString("\n---\n\n")
-		}
-		b.WriteString("## Skill: " + s.Name + "\n")
-		if s.Description != "" {
-			b.WriteString("- description: " + strings.TrimSpace(s.Description) + "\n")
-		}
-		if strings.TrimSpace(s.Path) != "" {
-			b.WriteString("- path: " + strings.TrimSpace(s.Path) + "\n")
-		}
-	}
-	return b.String()
+	return filepath.Clean(abs)
 }

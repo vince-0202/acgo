@@ -44,6 +44,25 @@ func NewUserMessageWithoutId(content string) Message {
 	}
 }
 
+func NewSystemMessage(id string, content string) Message {
+	return Message{
+		ID:   "system-" + id,
+		Role: keys.AgentRoleSystem,
+		Content: []*ContentBlock{
+			NewTextContentBlock(content),
+		},
+	}
+}
+
+func NewSystemMessageWithoutId(content string) Message {
+	return Message{
+		Role: keys.AgentRoleSystem,
+		Content: []*ContentBlock{
+			NewTextContentBlock(content),
+		},
+	}
+}
+
 // Message is the application-facing message type.
 type Message struct {
 	ID         string                // unique identifier within a session

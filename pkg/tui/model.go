@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/vince-0202/acgo/pkg/agent"
@@ -37,6 +38,8 @@ type Model struct {
 	streamingContent  string
 	streamingThinking string
 	streamCh          chan streamEvent
+	viewport          viewport.Model
+	autoFollow        bool
 	width             int
 	height            int
 	err               error
@@ -48,7 +51,7 @@ type Model struct {
 	// context files (P1.3)
 	workDir string
 
-	// pendingSkillContent: when set, next user message is prefixed with this (for /skill:name).
+	// pendingSkillContent: when set, next user message is prefixed with this (for /skill <name>).
 	pendingSkillContent string
 }
 
@@ -117,6 +120,8 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		agent:        ag,
 		textarea:     newInputTA(),
 		history:      nil,
+		viewport:     viewport.New(78, 16),
+		autoFollow:   true,
 		width:        80,
 		height:       24,
 		commands:     map[string]commandSpec{},
@@ -144,11 +149,11 @@ func newInputTA() textarea.Model {
 	return ta
 }
 
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
 	return textarea.Blink
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -157,6 +162,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.width = 80
 		}
 		m.textarea.SetWidth(msg.Width)
+		wrapWidth := m.width - 2
+		if wrapWidth < 20 {
+			wrapWidth = 20
+		}
+		m.viewport.Width = wrapWidth
+		// Reserve room for input box and status line.
+		m.viewport.Height = m.height - 4
+		if m.viewport.Height < 5 {
+			m.viewport.Height = 5
+		}
 		return m, nil
 	case tea.KeyMsg:
 		st := m.agent.State()
@@ -179,6 +194,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.agent.EnqueueSteering(msg)
 					m.textarea.SetValue("")
 					m.history = append(m.history, "You: (steering) "+input)
+					m.autoFollow = true
 					return m, nil
 				}
 				if strings.HasPrefix(input, "/") {
@@ -189,6 +205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, tea.Quit
 					}
 					m.history = append(m.history, "> "+reply)
+					m.autoFollow = true
 					return m, nil
 				}
 				m.textarea.SetValue("")
@@ -198,6 +215,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				log.Debugf("send prompt len=%d", len(input))
 				m.history = append(m.history, "You: "+input)
+				m.autoFollow = true
 				return m, m.runAgentStream(input)
 			}
 		case "alt+enter":
@@ -212,10 +230,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.agent.EnqueueFollowUp(msg)
 					m.textarea.SetValue("")
 					m.history = append(m.history, "You: (follow-up) "+input)
+					m.autoFollow = true
 					return m, nil
 				}
 				// 非 streaming 时 alt+enter 不发送，交给 textarea 处理换行
 			}
+		case "pgup":
+			m.autoFollow = false
+			m.viewport.LineUp(10)
+			return m, nil
+		case "pgdown":
+			m.viewport.LineDown(10)
+			if m.viewport.AtBottom() {
+				m.autoFollow = true
+			}
+			return m, nil
+		case "home":
+			m.autoFollow = false
+			m.viewport.GotoTop()
+			return m, nil
+		case "end":
+			m.autoFollow = true
+			m.viewport.GotoBottom()
+			return m, nil
+		case "up":
+			m.autoFollow = false
+			m.viewport.LineUp(1)
+			return m, nil
+		case "down":
+			m.viewport.LineDown(1)
+			if m.viewport.AtBottom() {
+				m.autoFollow = true
+			}
+			return m, nil
+		}
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.autoFollow = false
+			m.viewport.LineUp(3)
+			return m, nil
+		case tea.MouseButtonWheelDown:
+			m.viewport.LineDown(3)
+			if m.viewport.AtBottom() {
+				m.autoFollow = true
+			}
+			return m, nil
 		}
 	case streamEvent:
 		// Flush finalized assistant chunks in chronological order.
@@ -223,16 +283,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.FinalThinking != "" {
 			m.history = append(m.history, "[Thinking] "+msg.FinalThinking)
 			m.streamingThinking = ""
+			m.autoFollow = true
 		}
 		if msg.FinalContent != "" {
 			m.history = append(m.history, "Assistant: "+msg.FinalContent)
 			m.streamingContent = ""
+			m.autoFollow = true
 		}
 		if msg.Done || msg.Err != nil {
 			if msg.Err != nil {
 				log.Debugf("stream done err=%v", msg.Err)
 				m.err = msg.Err
 				m.history = append(m.history, "Error: "+errors.FormatErrorForDisplay(msg.Err))
+				m.autoFollow = true
 			} else {
 				log.Debugf("stream done content_len=%d thinking_len=%d", len(m.streamingContent), len(m.streamingThinking))
 				if m.streamingThinking != "" {
@@ -241,6 +304,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.streamingContent != "" {
 					m.history = append(m.history, "Assistant: "+m.streamingContent)
 				}
+				m.autoFollow = true
 			}
 			m.streamingContent = ""
 			m.streamingThinking = ""
@@ -249,6 +313,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ToolText != "" {
 			// Tool execution logs are emitted from agent goroutine; only append to history here (UI thread).
 			m.history = append(m.history, strings.Split(msg.ToolText, "\n")...)
+			m.autoFollow = true
 		}
 		if msg.ThinkingDelta != "" {
 			m.streamingThinking += msg.ThinkingDelta
@@ -270,7 +335,7 @@ var thinkingStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("246")).
 	Faint(true)
 
-func (m Model) View() string {
+func (m *Model) View() string {
 
 	w := m.width
 	if w <= 0 {
@@ -305,14 +370,19 @@ func (m Model) View() string {
 		commandView = m.commandPaletteView()
 	}
 
+	m.viewport.SetContent(lipgloss.NewStyle().Width(wrapWidth).Render(body))
+	if m.autoFollow {
+		m.viewport.GotoBottom()
+	}
+
 	views := []string{
-		lipgloss.NewStyle().Width(wrapWidth).Render(body),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.statusLine()),
+		m.viewport.View(),
 		lipgloss.NewStyle().Border(lipgloss.DoubleBorder(), true, false, true, false).Render(m.textarea.View()),
 	}
 	if commandView != "" {
 		views = append(views, commandView)
 	}
-	views = append(views, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.statusLine()))
 
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
 }
@@ -652,7 +722,12 @@ func Run(sessionId string) error {
 		return err
 	}
 
-	_, err = tea.NewProgram(model, tea.WithOutput(os.Stdout)).Run()
+	_, err = tea.NewProgram(
+		model,
+		tea.WithOutput(os.Stdout),
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	).Run()
 	return err
 }
 

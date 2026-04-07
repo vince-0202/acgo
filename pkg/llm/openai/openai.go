@@ -77,10 +77,13 @@ func (c *Client) Stream(ctx context.Context, model llm.Model, message []communi.
 		}
 
 		params := c.buildChatCompletionNewParams(message, model, opts, true)
-		log.Debugf("[llm] stream call model=%s provider=%s messages=%d", model.ID, c.provider, len(message))
+		log.Debugf("[llm][provider=%s][mode=stream] request=%s", c.provider, marshalJSON(params))
 
 		stream := c.oai.Chat.Completions.NewStreaming(ctx, params)
 		if err := stream.Err(); err != nil {
+			log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
+				"error": err.Error(),
+			}))
 			out <- communi.LLMEvent{Type: communi.EventError, Error: err}
 			return
 		}
@@ -117,6 +120,9 @@ func (c *Client) Stream(ctx context.Context, model llm.Model, message []communi.
 		}
 
 		if err := stream.Err(); err != nil {
+			log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
+				"error": err.Error(),
+			}))
 			out <- communi.LLMEvent{Type: communi.EventError, Error: err}
 			return
 		}
@@ -128,6 +134,15 @@ func (c *Client) Stream(ctx context.Context, model llm.Model, message []communi.
 			st.emitEndEvents(out)
 			stopReason = "stop"
 		}
+		log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
+			"stopReason": stopReason,
+			"usage":      st.usage,
+			"toolCall": map[string]any{
+				"id":   st.toolCallID,
+				"name": st.toolCallName,
+				"args": st.toolCallArgs,
+			},
+		}))
 		out <- communi.LLMEvent{Type: communi.EventDone, StopReason: stopReason, Usage: &st.usage}
 	}()
 
@@ -140,10 +155,13 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, message []commun
 	}
 
 	params := c.buildChatCompletionNewParams(message, model, opts, false)
-	log.Debugf("[llm] call model=%s provider=%s messages=%d", model.ID, c.provider, len(message))
+	log.Debugf("[llm][provider=%s][mode=complete] request=%s", c.provider, marshalJSON(params))
 
 	resp, err := c.oai.Chat.Completions.New(ctx, params)
 	if err != nil {
+		log.Debugf("[llm][provider=%s][mode=complete] response=%s", c.provider, marshalJSON(map[string]any{
+			"error": err.Error(),
+		}))
 		return communi.Message{}, llm.Usage{}, err
 	}
 	if resp == nil || len(resp.Choices) == 0 {
@@ -151,6 +169,13 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, message []commun
 	}
 
 	choice := resp.Choices[0]
+	log.Debugf("[llm][provider=%s][mode=complete] response=%s", c.provider, marshalJSON(map[string]any{
+		"id":           resp.ID,
+		"model":        resp.Model,
+		"finishReason": choice.FinishReason,
+		"message":      choice.Message,
+		"usage":        resp.Usage,
+	}))
 
 	msg := communi.NewEmptyAssistantMessage()
 	msg.AppendMetadata("provider", c.Name)
@@ -175,6 +200,14 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, message []commun
 	// this provider only returns message + usage.
 	_ = choice.FinishReason
 	return msg, usage, nil
+}
+
+func marshalJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return `{"marshal_error":"` + err.Error() + `"}`
+	}
+	return string(b)
 }
 
 func (c *Client) buildChatCompletionNewParams(message []communi.Message, model llm.Model, opts *llm.Options, streaming bool) oai.ChatCompletionNewParams {

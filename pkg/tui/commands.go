@@ -245,14 +245,14 @@ func (m *Model) registerBuiltinCommands() {
 	m.registerCommand(commandSpec{
 		Name:  "skill",
 		Usage: "/skill <name>",
-		Help:  "Apply skill by name to the next message (model should call skill_search).",
+		Help:  "Ask the model to prioritize a skill on the next message (skills are already in the system prompt).",
 		Handle: func(m *Model, arg string) (string, bool) {
 			name := strings.TrimSpace(arg)
 			if name == "" {
 				return "usage: /skill <name> (e.g. /skill code-review)", false
 			}
-			m.pendingSkillContent = "请先调用 skill_search 工具查询该 skill（name=" + name + "）并严格遵循 SKILL.md 内容，然后再处理下面用户请求。"
-			return "next message will ask model to use skill_search: " + name, false
+			m.pendingSkillContent = "请优先遵循系统提示词中「Skills」节里名为 \"" + name + "\" 的 skill，然后再处理下面用户请求。"
+			return "next message will emphasize skill: " + name, false
 		},
 	})
 
@@ -261,9 +261,13 @@ func (m *Model) registerBuiltinCommands() {
 		Usage: "/skills",
 		Help:  "List available skills (from disk).",
 		Handle: func(m *Model, _ string) (string, bool) {
-			skillList, _ := harness.Load(m.workDir)
+			wd, err := os.Getwd()
+			if err != nil || strings.TrimSpace(wd) == "" {
+				wd = m.workDir
+			}
+			skillList, _ := harness.Load(wd)
 			if len(skillList) == 0 {
-				return "no skills loaded (add SKILL.md in ~/.acgo/skills/ or .acgo/skills/)", false
+				return "no skills loaded (use ~/.acgo/skills/<name>/SKILL.md or <project>/.acgo/skills/<name>/SKILL.md)", false
 			}
 			var b strings.Builder
 			b.WriteString("loaded skills:\n")

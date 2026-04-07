@@ -2,12 +2,13 @@ package agent
 
 import (
 	"context"
+	"strings"
+	"time"
+
 	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/errors"
 	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/utils"
-	"sync"
-	"time"
 
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
@@ -20,14 +21,8 @@ type Options struct {
 	Provider     llm.Provider
 	UseTools     []harness.Tool
 	InitialState State
-	// MemoryWriter is optional. When set, Agent will automatically write
-	// long-term dialogue memories after each user->assistant exchange.
-	MemoryWriter MemoryWriter
-}
-
-// MemoryWriter stores conversation memories for long-term retrieval.
-type MemoryWriter interface {
-	WriteDialogue(ctx context.Context, sessionID string, userText string, assistantText string) error
+	// MemoryWriter is optional; when nil, harness.MemoryController.Load uses memory.DefaultManager().
+	MemoryWriter harness.MemoryWriter
 }
 
 // Agent coordinates LLM calls, tools and state updates.
@@ -37,15 +32,15 @@ type Agent struct {
 	contextController *harness.ContextController
 	memoryController  *harness.MemoryController
 	toolController    *harness.ToolController
+	skillsController  *harness.SkillsController
 
 	Model    llm.Model
 	Provider llm.Provider
 	state    State
 
-	listenerManager listenerManager
+	listenerManager *listenerManager
+	queueManager    *QueueManager
 
-	queueMu       sync.Mutex // protects SteeringQueue and FollowUpQueue
-	memoryWriter  MemoryWriter
 	currentCancel context.CancelFunc
 }
 
@@ -56,24 +51,34 @@ func (a *Agent) Id() string {
 // New creates a new Agent with the given options.
 func New(id string, opts Options) *Agent {
 	a := &Agent{
-		id:           id,
-		Provider:     opts.Provider,
-		Model:        opts.Model,
-		state:        opts.InitialState,
-		memoryWriter: opts.MemoryWriter,
+		id:       id,
+		Provider: opts.Provider,
+		Model:    opts.Model,
+		state:    opts.InitialState,
+		listenerManager: &listenerManager{
+			listeners: make([]listenerSlot, 0),
+		},
+		queueManager: &QueueManager{
+			SteeringQueue: make([]communi.Message, 0),
+			FollowUpQueue: make([]communi.Message, 0),
+		},
 	}
 
 	//register the other controller
 	//first registry context controller
 	a.contextController = harness.NewContextController(id, opts.WorkDir)
-	a.LoadContext()
 
-	a.toolController = harness.NewToolController(a.id, a.emit,
+	a.skillsController = harness.NewSkillsController(opts.WorkDir)
+	a.skillsController.Load()
+
+	a.toolController = harness.NewToolController(a.id, a.contextController, a.emit,
 		opts.UseTools...,
 	)
-	a.memoryController = harness.NewMemoryController()
-	a.state.WorkDir = opts.WorkDir
+	a.memoryController = harness.NewMemoryController(opts.MemoryWriter)
+	a.memoryController.Load()
 
+	a.LoadContext()
+	a.state.WorkDir = opts.WorkDir
 	return a
 }
 
@@ -138,43 +143,19 @@ func (a *Agent) Reset() {
 	a.state.Error = nil
 	a.state.LastErrorKind = errors.ErrKindNone
 	a.state.StreamMessage = nil
-	a.queueMu.Lock()
-	a.state.SteeringQueue = nil
-	a.state.FollowUpQueue = nil
-	a.queueMu.Unlock()
+	a.queueManager.Clean()
+
 }
 
 // EnqueueSteering adds a message to the steering queue. When the agent is busy,
 // callers can enqueue; after the current turn ends, steering messages are consumed first.
 func (a *Agent) EnqueueSteering(msg communi.Message) {
-	a.queueMu.Lock()
-	defer a.queueMu.Unlock()
-	a.state.SteeringQueue = append(a.state.SteeringQueue, msg)
+	a.queueManager.EnqueueSteering(msg)
 }
 
 // EnqueueFollowUp adds a message to the follow-up queue. Consumed after SteeringQueue is empty.
 func (a *Agent) EnqueueFollowUp(msg communi.Message) {
-	a.queueMu.Lock()
-	defer a.queueMu.Unlock()
-	a.state.FollowUpQueue = append(a.state.FollowUpQueue, msg)
-}
-
-// drainOneFromQueues removes and returns one message: steering first, then follow-up.
-// Caller must not hold queueMu.
-func (a *Agent) drainOneFromQueues() *communi.Message {
-	a.queueMu.Lock()
-	defer a.queueMu.Unlock()
-	if len(a.state.SteeringQueue) > 0 {
-		msg := a.state.SteeringQueue[0]
-		a.state.SteeringQueue = a.state.SteeringQueue[1:]
-		return &msg
-	}
-	if len(a.state.FollowUpQueue) > 0 {
-		msg := a.state.FollowUpQueue[0]
-		a.state.FollowUpQueue = a.state.FollowUpQueue[1:]
-		return &msg
-	}
-	return nil
+	a.queueManager.EnqueueFollowUp(msg)
 }
 
 // Prompt sends a new user message and runs one or more LLM turns,
@@ -183,6 +164,7 @@ func (a *Agent) drainOneFromQueues() *communi.Message {
 // messages are consumed (steering first, then follow-up) and processed before returning.
 func (a *Agent) Prompt(ctx context.Context, content string) error {
 	turnID := utils.SnowflakeIDString()
+	a.ensureSystemPromptMessage()
 	userMsg := communi.NewUserMessage(turnID, content)
 	a.contextController.AppendMessage(userMsg)
 	a.emit(communi.AgentEvent{Type: communi.EventAgentStart, AgentID: a.id})
@@ -235,7 +217,7 @@ func (a *Agent) emitUserMessage(turnID string, msg *communi.Message) {
 // emitNextQueuedMessage drains one message from steering or follow-up queue, appends it, and emits events.
 // Returns the consumed message or nil if both queues were empty.
 func (a *Agent) emitNextQueuedMessage(turnID string) *communi.Message {
-	next := a.drainOneFromQueues()
+	next := a.queueManager.DrainOneFromQueues()
 	if next == nil {
 		return nil
 	}
@@ -369,10 +351,28 @@ func (a *Agent) GetMessages() []communi.Message {
 
 func (a *Agent) LoadContext() {
 	a.contextController.Load()
+	a.contextController.AppendSystemPrompt(a.skillsController.SystemPrompt())
 }
 
 func (a *Agent) SystemPrompt() string {
 	return a.contextController.Prompt
+}
+
+func (a *Agent) ensureSystemPromptMessage() {
+	p := strings.TrimSpace(a.contextController.Prompt)
+	if p == "" {
+		return
+	}
+	msgs := a.contextController.Messages
+	if len(msgs) > 0 && msgs[0].Role == keys.AgentRoleSystem {
+		if strings.TrimSpace(msgs[0].ContentBlocksToText()) == p {
+			return
+		}
+		msgs[0] = communi.NewSystemMessageWithoutId(p)
+		a.contextController.ReplaceMessages(msgs)
+		return
+	}
+	a.contextController.ReplaceMessages(append([]communi.Message{communi.NewSystemMessageWithoutId(p)}, msgs...))
 }
 
 func (a *Agent) ContextFilePath() []string {
@@ -397,11 +397,4 @@ type State struct {
 	// LastStopReason records the last completion stop reason reported by
 	// the provider (e.g. "stop", "length", "toolUse", "error", "aborted").
 	LastStopReason string
-
-	// SteeringQueue holds user/steering messages to process next; consumed before FollowUpQueue.
-	// When the agent is busy, callers may enqueue here; after the current turn ends, these are processed first.
-	SteeringQueue []communi.Message
-
-	// FollowUpQueue holds follow-up messages; consumed after SteeringQueue is empty.
-	FollowUpQueue []communi.Message
 }

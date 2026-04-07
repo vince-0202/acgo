@@ -6,17 +6,17 @@ import (
 	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/llm"
 	"github.com/vince-0202/acgo/pkg/log"
-	"github.com/vince-0202/acgo/pkg/memory"
 	"github.com/vince-0202/acgo/pkg/runtime"
 	"github.com/vince-0202/acgo/pkg/tools"
 	"path/filepath"
 )
 
 type AgentBuildConfig struct {
-	Id        string
-	UseModel  string
-	UseTools  []harness.Tool
-	UseMemory agent.MemoryWriter
+	Id       string
+	UseModel string
+	UseTools []harness.Tool
+	// UseMemory overrides the default from harness.MemoryController.Load (memory.DefaultManager).
+	UseMemory harness.MemoryWriter
 }
 
 func BuildAgent(settings *config.Settings, options ...AgentBuilderOption) *agent.Agent {
@@ -27,13 +27,6 @@ func BuildAgent(settings *config.Settings, options ...AgentBuilderOption) *agent
 	}
 	for _, option := range options {
 		option(&builder)
-	}
-
-	if builder.UseMemory == nil {
-		mgr, err := memory.DefaultManager()
-		if err == nil {
-			builder.UseMemory = mgr
-		}
 	}
 
 	provider, module := loadProviderAndModule(builder)
@@ -92,14 +85,13 @@ func WithDefaultTools() AgentBuilderOption {
 		tools.NewListTool(),
 		tools.NewRagTool(),
 		tools.NewMemoryRecallTool(),
-		tools.NewSkillSearchTool(),
 	}
 	return func(config *AgentBuildConfig) {
 		config.UseTools = append(config.UseTools, builtinTools...)
 	}
 }
 
-func WithMemory(mem agent.MemoryWriter) AgentBuilderOption {
+func WithMemory(mem harness.MemoryWriter) AgentBuilderOption {
 	return func(config *AgentBuildConfig) {
 		config.UseMemory = mem
 	}
