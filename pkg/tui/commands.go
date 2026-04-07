@@ -121,6 +121,7 @@ func (m *Model) registerBuiltinCommands() {
 			m.history = nil
 			m.streamingContent = ""
 			m.streamingThinking = ""
+			m.usageIn, m.usageOut, m.usageTotal = 0, 0, 0
 			return "new session: " + path, false
 		},
 	})
@@ -195,6 +196,7 @@ func (m *Model) registerBuiltinCommands() {
 			m.history = nil
 			m.streamingContent = ""
 			m.streamingThinking = ""
+			m.usageIn, m.usageOut, m.usageTotal = 0, 0, 0
 			return "reset done", false
 		},
 	})

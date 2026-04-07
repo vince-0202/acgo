@@ -23,16 +23,19 @@ type Options struct {
 	InitialState State
 	// MemoryWriter is optional; when nil, harness.MemoryController.Load uses memory.DefaultManager().
 	MemoryWriter harness.MemoryWriter
+	// DisableSubAgentTool when true skips registering the sub_agent tool (used for child agents).
+	DisableSubAgentTool bool
 }
 
 // Agent coordinates LLM calls, tools and state updates.
 type Agent struct {
 	id string
 	//all controllers
-	contextController *harness.ContextController
-	memoryController  *harness.MemoryController
-	toolController    *harness.ToolController
-	skillsController  *harness.SkillsController
+	contextController  *harness.ContextController
+	memoryController   *harness.MemoryController
+	toolController     *harness.ToolController
+	skillsController   *harness.SkillsController
+	subAgentController *SubAgentController
 
 	Model    llm.Model
 	Provider llm.Provider
@@ -46,6 +49,11 @@ type Agent struct {
 
 func (a *Agent) Id() string {
 	return a.id
+}
+
+// SubAgentController returns the manager for delegated sub-agents (child agents).
+func (a *Agent) SubAgentController() *SubAgentController {
+	return a.subAgentController
 }
 
 // New creates a new Agent with the given options.
@@ -76,6 +84,11 @@ func New(id string, opts Options) *Agent {
 	)
 	a.memoryController = harness.NewMemoryController(opts.MemoryWriter)
 	a.memoryController.Load()
+
+	a.subAgentController = NewSubAgentController(a)
+	if !opts.DisableSubAgentTool {
+		a.toolController.RegistryTool(newSubAgentTool(a.subAgentController))
+	}
 
 	a.LoadContext()
 	a.state.WorkDir = opts.WorkDir
@@ -187,10 +200,12 @@ func (a *Agent) Prompt(ctx context.Context, content string) error {
 				break
 			}
 		}
-		go a.memoryController.RecordWithMetaData(ctx, userTurnMsg, map[string]any{
-			"turnID": currentTurnID,
-			"type":   "userAsk",
-		})
+		if userTurnMsg != nil {
+			go a.memoryController.RecordWithMetaData(ctx, userTurnMsg, map[string]any{
+				"turnID": currentTurnID,
+				"type":   "userAsk",
+			})
+		}
 
 		lastErr = a.runLLMTurnsUntilDone(ctx, currentTurnID)
 		if lastErr != nil {
@@ -277,7 +292,8 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 
 	pendingToolCalls := a.toolController.GetPendingToolCalls()
 	if len(pendingToolCalls) > 0 {
-		assistant.ToolCall = &pendingToolCalls[0]
+		assistant.ToolCalls = append([]communi.ToolCallRequest(nil), pendingToolCalls...)
+		assistant.ToolCall = &assistant.ToolCalls[0]
 	}
 	a.contextController.AppendMessage(assistant)
 

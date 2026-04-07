@@ -65,15 +65,18 @@ func NewSystemMessageWithoutId(content string) Message {
 
 // Message is the application-facing message type.
 type Message struct {
-	ID         string                // unique identifier within a session
-	Metadata   map[string]any        // arbitrary metadata
-	Role       keys.AgentMessageRole `json:"role"`               // logical role
-	Content    []*ContentBlock       `json:"content,omitempty"`  // rendered text content (for UI)
-	Thinking   string                `json:"thinking,omitempty"` // reasoning/thinking stream from models that support it (e.g. DeepSeek R1, o1)
-	ToolCall   *ToolCallRequest      `json:"tool_call,omitempty"`
-	ToolResult *ToolCallResult       `json:"tool_result,omitempty"`
-	CreatedAt  time.Time             `json:"created,omitempty"`
-	IsError    bool                  // whether this message represents an error
+	ID       string                // unique identifier within a session
+	Metadata map[string]any        // arbitrary metadata
+	Role     keys.AgentMessageRole `json:"role"`               // logical role
+	Content  []*ContentBlock       `json:"content,omitempty"`  // rendered text content (for UI)
+	Thinking string                `json:"thinking,omitempty"` // reasoning/thinking stream from models that support it (e.g. DeepSeek R1, o1)
+	ToolCall *ToolCallRequest      `json:"tool_call,omitempty"`
+	// ToolCalls is the full parallel tool_calls set for this assistant turn (OpenAI-style).
+	// When non-empty, providers should prefer this over ToolCall for serialization.
+	ToolCalls  []ToolCallRequest `json:"tool_calls,omitempty"`
+	ToolResult *ToolCallResult   `json:"tool_result,omitempty"`
+	CreatedAt  time.Time         `json:"created,omitempty"`
+	IsError    bool              // whether this message represents an error
 }
 
 func (m *Message) AppendTextContent(text string) {

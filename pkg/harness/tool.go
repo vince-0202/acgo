@@ -61,7 +61,16 @@ func (tc *ToolController) Execute(ctx context.Context) {
 	calls := tc.pendingToolCalls
 	tc.pendingToolCalls = nil
 
-	for _, call := range calls {
+	type slot struct {
+		call   communi.ToolCallRequest
+		args   json.RawMessage
+		tool   Tool
+		phase  string // "unknown", "val_err", "ok"
+		result communi.ToolCallResult
+	}
+	slots := make([]slot, len(calls))
+
+	for i, call := range calls {
 		args := normalizeToolCallArguments(call.Arguments)
 		tool, ok := tc.FindTool(call.Name)
 		if !ok {
@@ -79,6 +88,8 @@ func (tc *ToolController) Execute(ctx context.Context) {
 				Error:      ErrUnknownProvider(call.Name),
 				ErrorKind:  errors.ErrKindTool,
 			})
+			slots[i].phase = "unknown"
+			continue
 		}
 		args = CoerceToolArguments(tool.JSONSchema(), args)
 		tc.emitFunc(communi.AgentEvent{
@@ -90,7 +101,6 @@ func (tc *ToolController) Execute(ctx context.Context) {
 		})
 
 		if err := ValidateToolArguments(tool.Name(), tool.JSONSchema(), args); err != nil {
-			// Validation failures are delivered as tool results with IsError so the model can retry.
 			toolMsg := communi.NewToolCallErrorMessage(call.ID, err)
 			tc.contextController.AppendMessage(toolMsg)
 			tc.emitFunc(communi.AgentEvent{
@@ -103,36 +113,33 @@ func (tc *ToolController) Execute(ctx context.Context) {
 				Error:      err,
 				ErrorKind:  errors.ErrKindTool,
 			})
+			slots[i].phase = "val_err"
 			continue
 		}
 
+		slots[i] = slot{call: call, args: args, tool: tool, phase: "ok"}
+	}
+
+	for i := range slots {
+		if slots[i].phase != "ok" {
+			continue
+		}
+		call := slots[i].call
+		args := slots[i].args
+		tool := slots[i].tool
 		result := tool.Execute(ctx, call.ID, args, nil)
-		if result.IsError() {
-			toolMsg := communi.NewToolCallErrorMessage(call.ID, result.Error)
-			tc.contextController.AppendMessage(toolMsg)
-			tc.emitFunc(communi.AgentEvent{
-				Type:       communi.EventToolExecutionEnd,
-				AgentID:    tc.agentId,
-				ToolName:   tool.Name(),
-				ToolCallID: call.ID,
-				ToolArgs:   args,
-				Message:    &toolMsg,
-				Error:      result.Error,
-				ErrorKind:  errors.ErrKindTool,
-			})
+		slots[i].result = result
+	}
+
+	for i := range slots {
+		if slots[i].phase != "ok" {
 			continue
 		}
-
-		toolMsg := communi.Message{
-			ID:      "tool-" + call.ID,
-			Role:    keys.AgentRoleTool,
-			Content: result.Content,
-			ToolCall: &communi.ToolCallRequest{
-				ID: call.ID,
-			},
-			IsError:  result.IsError(),
-			Metadata: result.Metadata,
-		}
+		call := slots[i].call
+		args := slots[i].args
+		tool := slots[i].tool
+		result := slots[i].result
+		toolMsg, errVal := toolResultToMessage(call.ID, result)
 		tc.contextController.AppendMessage(toolMsg)
 		tc.emitFunc(communi.AgentEvent{
 			Type:       communi.EventToolExecutionEnd,
@@ -141,11 +148,28 @@ func (tc *ToolController) Execute(ctx context.Context) {
 			ToolCallID: call.ID,
 			ToolArgs:   args,
 			Message:    &toolMsg,
-			Error:      result.Error,
+			Error:      errVal,
 			ErrorKind:  errors.ErrKindTool,
 		})
-
 	}
+}
+
+func toolResultToMessage(toolCallID string, result communi.ToolCallResult) (communi.Message, error) {
+	if result.IsError() {
+		toolMsg := communi.NewToolCallErrorMessage(toolCallID, result.Error)
+		return toolMsg, result.Error
+	}
+	toolMsg := communi.Message{
+		ID:      "tool-" + toolCallID,
+		Role:    keys.AgentRoleTool,
+		Content: result.Content,
+		ToolCall: &communi.ToolCallRequest{
+			ID: toolCallID,
+		},
+		IsError:  result.IsError(),
+		Metadata: result.Metadata,
+	}
+	return toolMsg, nil
 }
 
 func (tc *ToolController) GetPendingToolCalls() []communi.ToolCallRequest {

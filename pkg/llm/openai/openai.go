@@ -77,7 +77,7 @@ func (c *Client) Stream(ctx context.Context, model llm.Model, message []communi.
 		}
 
 		params := c.buildChatCompletionNewParams(message, model, opts, true)
-		log.Debugf("[llm][provider=%s][mode=stream] request=%s", c.provider, marshalJSON(params))
+		// Suppress full request payload logs to avoid noisy output.
 
 		stream := c.oai.Chat.Completions.NewStreaming(ctx, params)
 		if err := stream.Err(); err != nil {
@@ -155,7 +155,7 @@ func (c *Client) Complete(ctx context.Context, model llm.Model, message []commun
 	}
 
 	params := c.buildChatCompletionNewParams(message, model, opts, false)
-	log.Debugf("[llm][provider=%s][mode=complete] request=%s", c.provider, marshalJSON(params))
+	// Suppress full request payload logs to avoid noisy output.
 
 	resp, err := c.oai.Chat.Completions.New(ctx, params)
 	if err != nil {
@@ -299,6 +299,38 @@ func convertTools(tools []communi.ToolSchema) []oai.ChatCompletionToolUnionParam
 	return out
 }
 
+func assistantToolCallsParam(m communi.Message) []oai.ChatCompletionMessageToolCallUnionParam {
+	if len(m.ToolCalls) > 0 {
+		out := make([]oai.ChatCompletionMessageToolCallUnionParam, 0, len(m.ToolCalls))
+		for _, tc := range m.ToolCalls {
+			out = append(out, oai.ChatCompletionMessageToolCallUnionParam{
+				OfFunction: &oai.ChatCompletionMessageFunctionToolCallParam{
+					ID: tc.ID,
+					Function: oai.ChatCompletionMessageFunctionToolCallFunctionParam{
+						Name:      tc.Name,
+						Arguments: string(tc.Arguments),
+					},
+				},
+			})
+		}
+		return out
+	}
+	if m.ToolCall != nil {
+		return []oai.ChatCompletionMessageToolCallUnionParam{
+			{
+				OfFunction: &oai.ChatCompletionMessageFunctionToolCallParam{
+					ID: m.ToolCall.ID,
+					Function: oai.ChatCompletionMessageFunctionToolCallFunctionParam{
+						Name:      m.ToolCall.Name,
+						Arguments: string(m.ToolCall.Arguments),
+					},
+				},
+			},
+		}
+	}
+	return nil
+}
+
 func convertMessages(msgs []communi.Message) []oai.ChatCompletionMessageParamUnion {
 	out := make([]oai.ChatCompletionMessageParamUnion, 0, len(msgs))
 	for _, m := range msgs {
@@ -315,18 +347,8 @@ func convertMessages(msgs []communi.Message) []oai.ChatCompletionMessageParamUni
 			assistantMsg.OfAssistant.SetExtraFields(map[string]any{
 				"reasoning_content": m.Thinking,
 			})
-			if m.ToolCall != nil {
-				assistantMsg.OfAssistant.ToolCalls = []oai.ChatCompletionMessageToolCallUnionParam{
-					{
-						OfFunction: &oai.ChatCompletionMessageFunctionToolCallParam{
-							ID: m.ToolCall.ID,
-							Function: oai.ChatCompletionMessageFunctionToolCallFunctionParam{
-								Name:      m.ToolCall.Name,
-								Arguments: string(m.ToolCall.Arguments),
-							},
-						},
-					},
-				}
+			if calls := assistantToolCallsParam(m); len(calls) > 0 {
+				assistantMsg.OfAssistant.ToolCalls = calls
 			}
 			out = append(out, assistantMsg)
 		default:
