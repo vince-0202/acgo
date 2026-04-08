@@ -16,10 +16,13 @@ import (
 
 // Options configures an Agent instance.
 type Options struct {
-	WorkDir      string
-	Model        llm.Model
-	Provider     llm.Provider
-	UseTools     []harness.Tool
+	WorkDir     string
+	Model       llm.Model
+	Provider    llm.Provider
+	UseTools    []harness.Tool
+	Permissions harness.PermissionsOptions
+	// ContextTrim configures deterministic trimming and auto LLM compaction thresholds for ContextController.
+	ContextTrim  harness.ContextOptions
 	InitialState State
 	// MemoryWriter is optional; when nil, harness.MemoryController.Load uses memory.DefaultManager().
 	MemoryWriter harness.MemoryWriter
@@ -36,6 +39,7 @@ type Agent struct {
 	toolController     *harness.ToolController
 	skillsController   *harness.SkillsController
 	subAgentController *SubAgentController
+	permissionCtrl     *harness.PermissionController
 
 	Model    llm.Model
 	Provider llm.Provider
@@ -46,6 +50,8 @@ type Agent struct {
 
 	currentCancel context.CancelFunc
 }
+
+const planModeInstructionPrompt = "Plan mode is active. Your final response must be a concrete coding plan only (steps, scope, and verification), not code changes. Do not call task-editing tools such as write/edit, and do not perform mutating operations."
 
 func (a *Agent) Id() string {
 	return a.id
@@ -75,11 +81,19 @@ func New(id string, opts Options) *Agent {
 	//register the other controller
 	//first registry context controller
 	a.contextController = harness.NewContextController(id, opts.WorkDir)
+	ct := opts.ContextTrim
+	a.contextController.Options = &ct
+	a.contextController.SetCompactLLM(opts.Provider, opts.Model)
 
 	a.skillsController = harness.NewSkillsController(opts.WorkDir)
 	a.skillsController.Load()
 
-	a.toolController = harness.NewToolController(a.id, a.contextController, a.emit,
+	a.permissionCtrl = harness.NewPermissionController(
+		opts.Permissions.Mode,
+		opts.Permissions.Rules,
+		opts.Permissions.ConfirmHook,
+	)
+	a.toolController = harness.NewToolController(a.id, a.contextController, a.emit, a.permissionCtrl,
 		opts.UseTools...,
 	)
 	a.memoryController = harness.NewMemoryController(opts.MemoryWriter)
@@ -112,6 +126,55 @@ func (a *Agent) emit(e communi.AgentEvent) {
 // SetModel updates the model.
 func (a *Agent) SetModel(m llm.Model) {
 	a.Model = m
+	if a.contextController != nil {
+		a.contextController.SetCompactLLM(a.Provider, m)
+	}
+}
+
+// CompactContext runs LLM-based context compaction (same as /compact). transcriptPath is optional suffix for full transcript.
+func (a *Agent) CompactContext(ctx context.Context, transcriptPath string) error {
+	if a == nil || a.contextController == nil {
+		return nil
+	}
+	return a.contextController.TrimMessage(ctx, &harness.TrimMessageOptions{
+		Mode:           harness.TrimModeLLMCompact,
+		Force:          true,
+		TranscriptPath: strings.TrimSpace(transcriptPath),
+	})
+}
+
+func (a *Agent) SetPermissionConfirmHook(hook harness.PermissionConfirmHook) {
+	if a == nil || a.permissionCtrl == nil {
+		return
+	}
+	a.permissionCtrl.SetConfirmHook(hook)
+	if a.subAgentController != nil {
+		a.subAgentController.setConfirmHookOnAllChildren(hook)
+	}
+}
+
+// SetPermissionMode updates runtime permission mode and syncs existing sub-agents.
+func (a *Agent) SetPermissionMode(mode harness.PermissionMode) error {
+	if a == nil || a.permissionCtrl == nil {
+		return nil
+	}
+	if err := a.permissionCtrl.SetMode(mode); err != nil {
+		return err
+	}
+	if a.subAgentController != nil {
+		if err := a.subAgentController.setPermissionModeOnAllChildren(a.permissionCtrl.Mode()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PermissionMode returns the current effective runtime permission mode.
+func (a *Agent) PermissionMode() harness.PermissionMode {
+	if a == nil || a.permissionCtrl == nil {
+		return harness.PermissionModeDefault
+	}
+	return a.permissionCtrl.Mode()
 }
 
 // SetThinkingLevel updates the thinking level.
@@ -266,15 +329,26 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 		a.currentCancel = nil
 	}()
 
-	a.contextController.TrimMessage()
+	if err := a.contextController.TrimMessage(ctx, nil); err != nil {
+		kind := errors.ClassifyError(err)
+		a.state.Error = err
+		a.state.LastErrorKind = kind
+		a.emit(communi.AgentEvent{Type: communi.EventTurnEnd, AgentID: a.id, TurnID: turnID, Error: err, ErrorKind: kind})
+		return err, false
+	}
 	a.toolController.CleanPendingTool()
 
 	opts := &llm.Options{
 		Tools:           a.toolController.GetToolSchemas(),
 		ReasoningEffort: a.state.ThinkingLevel,
 	}
+	llmMessages := a.contextController.Messages
+	if a.PermissionMode() == harness.PermissionModePlan {
+		llmMessages = append([]communi.Message(nil), llmMessages...)
+		llmMessages = append(llmMessages, communi.NewSystemMessageWithoutId(planModeInstructionPrompt))
+	}
 
-	events, streamErr := a.Provider.Stream(ctx, a.Model, a.contextController.Messages, opts)
+	events, streamErr := a.Provider.Stream(ctx, a.Model, llmMessages, opts)
 	if streamErr != nil {
 		kind := errors.ClassifyError(streamErr)
 		a.state.Error = streamErr
@@ -393,6 +467,15 @@ func (a *Agent) ensureSystemPromptMessage() {
 
 func (a *Agent) ContextFilePath() []string {
 	return a.contextController.Paths
+}
+
+// CheckPermission provides a shared permission entrypoint for custom resources,
+// so callers do not need to depend on tool execution flow.
+func (a *Agent) CheckPermission(ctx context.Context, req harness.PermissionRequest) (harness.PermissionResult, error) {
+	if a == nil || a.permissionCtrl == nil {
+		return harness.PermissionResult{}, nil
+	}
+	return a.permissionCtrl.Check(ctx, req)
 }
 
 // State AgentState holds the mutable state of an Agent instance.

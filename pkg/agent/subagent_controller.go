@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -54,11 +55,26 @@ func (c *SubAgentController) Create(subID string) (string, error) {
 	childID := c.parent.id + "-sub-" + key
 	childWorkDir := filepath.Join(c.parent.state.WorkDir, "subagents", key)
 
+	childTrim := harness.ContextOptions{}
+	if c.parent.contextController != nil && c.parent.contextController.Options != nil {
+		childTrim = *c.parent.contextController.Options
+	}
+	var perms harness.PermissionsOptions
+	if c.parent != nil && c.parent.permissionCtrl != nil {
+		pc := c.parent.permissionCtrl
+		perms = harness.PermissionsOptions{
+			Mode:        pc.Mode(),
+			Rules:       pc.Rules(),
+			ConfirmHook: pc.GetConfirmHook(),
+		}
+	}
 	child := New(childID, Options{
-		WorkDir:  childWorkDir,
-		Provider: c.parent.Provider,
-		Model:    c.parent.Model,
-		UseTools: toolsForChildAgent(c.parent),
+		WorkDir:     childWorkDir,
+		Provider:    c.parent.Provider,
+		Model:       c.parent.Model,
+		UseTools:    toolsForChildAgent(c.parent),
+		ContextTrim: childTrim,
+		Permissions: perms,
 		InitialState: State{
 			WorkDir:       childWorkDir,
 			ThinkingLevel: c.parent.state.ThinkingLevel,
@@ -125,6 +141,45 @@ func (c *SubAgentController) AgentBySubID(subID string) *Agent {
 }
 
 // Remove drops a sub-agent from this controller (does not unregister from runtime).
+// setConfirmHookOnAllChildren updates the permission confirm hook on every child agent
+// (used when the TUI sets the hook on the parent after children already exist).
+func (c *SubAgentController) setConfirmHookOnAllChildren(hook harness.PermissionConfirmHook) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	children := make([]*Agent, 0, len(c.children))
+	for _, ch := range c.children {
+		children = append(children, ch)
+	}
+	c.mu.Unlock()
+	for _, child := range children {
+		child.SetPermissionConfirmHook(hook)
+	}
+}
+
+func (c *SubAgentController) setPermissionModeOnAllChildren(mode harness.PermissionMode) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	children := make([]*Agent, 0, len(c.children))
+	for _, ch := range c.children {
+		children = append(children, ch)
+	}
+	c.mu.Unlock()
+	var errs []string
+	for _, child := range children {
+		if err := child.SetPermissionMode(mode); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("sync permission mode to sub-agents: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 func (c *SubAgentController) Remove(subID string) error {
 	key := sanitizeSubAgentKey(subID)
 	if key == "" {

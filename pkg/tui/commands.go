@@ -1,15 +1,16 @@
 package tui
 
 import (
+	"context"
 	"fmt"
-	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
-	"github.com/vince-0202/acgo/pkg/runtime"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/runtime"
 	"github.com/vince-0202/acgo/pkg/session"
 )
 
@@ -99,6 +100,23 @@ func (m *Model) registerBuiltinCommands() {
 				return "session: " + m.session.Path, false
 			}
 			return "no session", false
+		},
+	})
+
+	m.registerCommand(commandSpec{
+		Name:    "compact",
+		Aliases: []string{"c"},
+		Usage:   "/compact",
+		Help:    "LLM summarization of the conversation and replace history (session path appended when available).",
+		Handle: func(m *Model, _ string) (string, bool) {
+			path := ""
+			if m.session != nil {
+				path = m.session.Path
+			}
+			if err := m.agent.CompactContext(context.Background(), path); err != nil {
+				return "compact failed: " + err.Error(), false
+			}
+			return "context compacted", false
 		},
 	})
 

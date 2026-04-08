@@ -13,7 +13,11 @@ import (
 	"strings"
 )
 
-const defaultGrepMaxResults = 50
+const (
+	defaultGrepMaxResults  = 50
+	defaultGrepMaxFiles    = 5000
+	defaultGrepMaxFileSize = 2 * 1024 * 1024 // 2MB
+)
 
 type grepTool struct{}
 
@@ -70,6 +74,8 @@ func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 
 	var out strings.Builder
 	n := 0
+	scannedFiles := 0
+	scanCapped := false
 	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		select {
 		case <-ctx.Done():
@@ -88,9 +94,17 @@ func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 			}
 			return nil
 		}
+		if scannedFiles >= defaultGrepMaxFiles {
+			scanCapped = true
+			return filepath.SkipAll
+		}
+		if info.Size() > defaultGrepMaxFileSize {
+			return nil
+		}
 		if n >= maxResults {
 			return filepath.SkipAll
 		}
+		scannedFiles++
 		f, openErr := os.Open(path)
 		if openErr != nil {
 			return nil
@@ -119,6 +133,9 @@ func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	}
 	if n >= maxResults {
 		fmt.Fprintf(&out, "\n(truncated at %d results)", maxResults)
+	}
+	if scanCapped {
+		fmt.Fprintf(&out, "\n(scan capped at %d files; narrow path or pattern for more complete results)", defaultGrepMaxFiles)
 	}
 	return communi.NewToolCallResult(toolCallID, strings.TrimSuffix(out.String(), "\n"))
 }

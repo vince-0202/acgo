@@ -87,6 +87,9 @@ func (m *Message) AppendTextContent(text string) {
 }
 
 func (m *Message) AppendMetadata(k string, v any) {
+	if m.Metadata == nil {
+		m.Metadata = make(map[string]any)
+	}
 	m.Metadata[k] = v
 }
 

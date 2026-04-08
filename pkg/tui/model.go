@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -21,6 +23,7 @@ import (
 	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/config"
 	"github.com/vince-0202/acgo/pkg/errors"
+	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
 	"github.com/vince-0202/acgo/pkg/llm/deepseek"
@@ -184,13 +187,30 @@ type Model struct {
 	usageIn    int
 	usageOut   int
 	usageTotal int
+
+	// toolPendingIdx maps tool_call_id -> transcript line index for rows showing "running", updated on end.
+	toolPendingIdx map[string]int
+}
+
+const (
+	toolLinePhaseStart = "start"
+	toolLinePhaseEnd   = "end"
+)
+
+// toolLineStreamEvent updates one transcript row: start appends "running", end replaces with "ok"/"error".
+type toolLineStreamEvent struct {
+	Phase      string
+	ToolCallID string
+	ToolName   string
+	ToolArgs   []byte
+	Failed     bool // end phase only
 }
 
 // streamEvent is sent from the agent goroutine for each delta or done/error.
 type streamEvent struct {
-	Delta         string         // text content delta
-	ThinkingDelta string         // reasoning/thinking delta (pi-ai thinking_* events)
-	ToolText      string         // human-friendly tool execution log line(s)
+	Delta         string // text content delta
+	ThinkingDelta string // reasoning/thinking delta (pi-ai thinking_* events)
+	ToolLine      *toolLineStreamEvent
 	FinalContent  string         // finalized assistant content at message end (ordered output)
 	FinalThinking string         // finalized assistant thinking at message end (ordered output)
 	TurnUsage     *communi.Usage // per LLM call, from EventTurnEnd (may occur multiple times per user message)
@@ -206,6 +226,7 @@ type subAgentPanelState struct {
 	history           []string
 	streamingContent  string
 	streamingThinking string
+	toolPendingIdx    map[string]int
 }
 
 type commandHandler func(m *Model, arg string) (reply string, quit bool)
@@ -457,9 +478,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingThinking = ""
 			return m, nil
 		}
-		if msg.ToolText != "" {
-			// Tool execution logs are emitted from agent goroutine; only append to history here (UI thread).
-			m.history = append(m.history, strings.Split(msg.ToolText, "\n")...)
+		if msg.ToolLine != nil {
+			m.applyToolLineStream(msg.SubID, msg.ToolLine)
 			m.autoFollow = true
 		}
 		if msg.ThinkingDelta != "" {
@@ -611,7 +631,10 @@ func (m *Model) View() string {
 	inputStr := lipgloss.NewStyle().Border(lipgloss.DoubleBorder(), true, false, true, false).Render(m.textarea.View())
 	inputLines := strings.Count(inputStr, "\n") + 1
 
-	tokenStr := lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Faint(true).Render(m.tokenSummaryLine())
+	tokenStr := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("242")).
+		Faint(true).
+		Render(m.tokenSummaryLine())
 	tokenLines := strings.Count(tokenStr, "\n") + 1
 
 	paletteLines := 0
@@ -790,11 +813,77 @@ func (m *Model) runCommand(raw string) (reply string, quit bool) {
 	return spec.Handle(m, arg)
 }
 
+func permissionModeLabel(mode harness.PermissionMode) string {
+	switch mode {
+	case harness.PermissionModeAcceptEdits:
+		return "acceptEdits"
+	case harness.PermissionModePlan:
+		return "plan"
+	case harness.PermissionModeAuto:
+		return "auto"
+	case harness.PermissionModeBypass:
+		return "bypassPermissions"
+	default:
+		return "default"
+	}
+}
+
+func permissionModeFromLabel(label string) harness.PermissionMode {
+	switch strings.TrimSpace(label) {
+	case "acceptEdits":
+		return harness.PermissionModeAcceptEdits
+	case "plan":
+		return harness.PermissionModePlan
+	case "auto":
+		return harness.PermissionModeAuto
+	case "bypassPermissions":
+		return harness.PermissionModeBypass
+	default:
+		return harness.PermissionModeDefault
+	}
+}
+
+func nextPermissionModeLabel(current string) string {
+	switch strings.TrimSpace(current) {
+	case "default":
+		return "acceptEdits"
+	case "acceptEdits":
+		return "plan"
+	case "plan":
+		return "auto"
+	case "auto":
+		return "bypassPermissions"
+	default:
+		return "default"
+	}
+}
+
+func (m *Model) currentPermissionModeLabel() string {
+	if m == nil || m.agent == nil {
+		return "default"
+	}
+	return permissionModeLabel(m.agent.PermissionMode())
+}
+
+func (m *Model) cyclePermissionMode() (string, error) {
+	current := m.currentPermissionModeLabel()
+	if m == nil || m.agent == nil {
+		return current, nil
+	}
+	next := nextPermissionModeLabel(current)
+	nextMode := permissionModeFromLabel(next)
+	if err := m.agent.SetPermissionMode(nextMode); err != nil {
+		return current, err
+	}
+	return next, nil
+}
+
 // statusLine returns a one-line status: model, streaming, last error (P0.5).
 func (m *Model) statusLine() string {
 	st := m.agent.State()
 	var parts []string
 	parts = append(parts, m.agent.Provider.Name()+"/"+m.agent.Model.ID)
+	parts = append(parts, "perm:"+m.currentPermissionModeLabel())
 	if st.IsStreaming {
 		parts = append(parts, "streaming")
 	} else {
@@ -840,10 +929,7 @@ func (m *Model) accumulateSessionUsage(u *communi.Usage) {
 
 // tokenSummaryLine shows cumulative token usage for this TUI session (below the input).
 func (m *Model) tokenSummaryLine() string {
-	if m.usageIn == 0 && m.usageOut == 0 && m.usageTotal == 0 {
-		return "tokens: —"
-	}
-	return fmt.Sprintf("tokens: in %d · out %d · total %d", m.usageIn, m.usageOut, m.usageTotal)
+	return fmt.Sprintf("in: %d · out: %d · total: %d", m.usageIn, m.usageOut, m.usageTotal)
 }
 
 func parseSlashCommand(raw string) (cmd string, arg string, ok bool) {
@@ -958,12 +1044,20 @@ func (m *Model) handleAgentEvent(e communi.AgentEvent, done *atomic.Bool, ch cha
 		default:
 		}
 	case communi.EventToolExecutionStart:
-		lines := formatToolExecutionStartLines(e.ToolName, e.ToolCallID, e.ToolArgs)
-		if len(lines) == 0 {
+		toolName := strings.TrimSpace(e.ToolName)
+		if toolName == "" {
 			return
 		}
 		select {
-		case ch <- streamEvent{ToolText: strings.Join(lines, "\n"), Ch: ch, SubID: subID}:
+		case ch <- streamEvent{
+			ToolLine: &toolLineStreamEvent{
+				Phase:      toolLinePhaseStart,
+				ToolCallID: e.ToolCallID,
+				ToolName:   toolName,
+				ToolArgs:   e.ToolArgs,
+			},
+			Ch: ch, SubID: subID,
+		}:
 		default:
 		}
 	case communi.EventTurnEnd:
@@ -979,12 +1073,21 @@ func (m *Model) handleAgentEvent(e communi.AgentEvent, done *atomic.Bool, ch cha
 		if name == "" {
 			name = "unknown"
 		}
-		lines := formatToolExecutionEndLines(name, e.ToolCallID, e.ToolArgs, e.Message, e.Error)
-		if len(lines) == 0 {
-			return
+		failed := e.Error != nil
+		if e.Message != nil && e.Message.IsError {
+			failed = true
 		}
 		select {
-		case ch <- streamEvent{ToolText: strings.Join(lines, "\n"), Ch: ch, SubID: subID}:
+		case ch <- streamEvent{
+			ToolLine: &toolLineStreamEvent{
+				Phase:      toolLinePhaseEnd,
+				ToolCallID: e.ToolCallID,
+				ToolName:   name,
+				ToolArgs:   e.ToolArgs,
+				Failed:     failed,
+			},
+			Ch: ch, SubID: subID,
+		}:
 		default:
 		}
 	}
@@ -1031,6 +1134,49 @@ func (m *Model) ensureSubPanel(subID string) *subAgentPanelState {
 	return m.subAgentPanels[subID]
 }
 
+// applyToolLineStream appends or updates a single tool status row in the main or sub-agent transcript.
+func (m *Model) applyToolLineStream(subID string, ev *toolLineStreamEvent) {
+	if ev == nil {
+		return
+	}
+	if subID == "" {
+		m.applyToolLineToHistory(&m.history, &m.toolPendingIdx, ev)
+		return
+	}
+	p := m.ensureSubPanel(subID)
+	m.applyToolLineToHistory(&p.history, &p.toolPendingIdx, ev)
+}
+
+func (m *Model) applyToolLineToHistory(history *[]string, idxMapPtr *map[string]int, ev *toolLineStreamEvent) {
+	idxMap := *idxMapPtr
+	if idxMap == nil {
+		idxMap = make(map[string]int)
+		*idxMapPtr = idxMap
+	}
+	id := ev.ToolCallID
+	if ev.Phase == toolLinePhaseStart {
+		line := formatToolGTLineWithStatus(ev.ToolName, ev.ToolArgs, "running")
+		*history = append(*history, line)
+		idxMap[id] = len(*history) - 1
+		return
+	}
+	if ev.Phase != toolLinePhaseEnd {
+		return
+	}
+	st := "ok"
+	if ev.Failed {
+		st = "error"
+	}
+	newLine := formatToolGTLineWithStatus(ev.ToolName, ev.ToolArgs, st)
+	idx, ok := idxMap[id]
+	if ok && idx >= 0 && idx < len(*history) {
+		(*history)[idx] = newLine
+		delete(idxMap, id)
+		return
+	}
+	*history = append(*history, newLine)
+}
+
 func (m *Model) applyStreamEventToSub(msg streamEvent) {
 	p := m.ensureSubPanel(msg.SubID)
 	if msg.FinalThinking != "" {
@@ -1041,8 +1187,8 @@ func (m *Model) applyStreamEventToSub(msg streamEvent) {
 		p.history = append(p.history, "Assistant: "+msg.FinalContent)
 		p.streamingContent = ""
 	}
-	if msg.ToolText != "" {
-		p.history = append(p.history, strings.Split(msg.ToolText, "\n")...)
+	if msg.ToolLine != nil {
+		m.applyToolLineStream(msg.SubID, msg.ToolLine)
 	}
 	if msg.ThinkingDelta != "" {
 		p.streamingThinking += msg.ThinkingDelta
@@ -1235,88 +1381,128 @@ func (m *Model) scrollFocusedGotoBottom() {
 	m.subViewports[sid] = vp
 }
 
-func formatToolExecutionStartLines(toolName string, toolCallID string, args []byte) []string {
-	toolName = strings.TrimSpace(toolName)
-	if toolName == "" {
-		return nil
+func truncateOneLine(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
 	}
-	id := strings.TrimSpace(toolCallID)
-
-	// Claude-code-like: show tool name + args as an indented block.
-	head := "Tool > " + toolName
-	if id != "" {
-		head += " (" + id + ")"
+	s = strings.Join(strings.Fields(s), " ")
+	if max <= 0 || len(s) <= max {
+		return s
 	}
-	lines := []string{head}
-
-	argText := strings.TrimSpace(string(args))
-	if argText != "" && argText != "null" {
-		lines = append(lines, "  args: "+argText)
-	}
-	return lines
+	return s[:max-1] + "…"
 }
 
-func formatToolExecutionEndLines(toolName string, toolCallID string, args []byte, msg *communi.Message, execErr error) []string {
-	const maxPreviewChars = 500
-	const maxPreviewLines = 12
+func compactJSONArgsForDisplay(m map[string]json.RawMessage, maxLen int) string {
+	skip := map[string]bool{"content": true, "instructions": true}
+	keysList := make([]string, 0, len(m))
+	for k := range m {
+		if skip[k] {
+			continue
+		}
+		keysList = append(keysList, k)
+	}
+	sort.Strings(keysList)
+	var parts []string
+	for _, k := range keysList {
+		var s string
+		if json.Unmarshal(m[k], &s) == nil && strings.TrimSpace(s) != "" {
+			parts = append(parts, k+"="+truncateOneLine(s, 120))
+			continue
+		}
+		raw := strings.TrimSpace(string(m[k]))
+		if len(raw) > 60 {
+			raw = raw[:57] + "..."
+		}
+		parts = append(parts, k+":"+raw)
+	}
+	return truncateOneLine(strings.Join(parts, ", "), maxLen)
+}
 
+// toolExecuteDetailForDisplay turns tool JSON args into a short human summary for the transcript header.
+func toolExecuteDetailForDisplay(toolName string, args []byte) string {
+	toolName = strings.ToLower(strings.TrimSpace(toolName))
+	argText := strings.TrimSpace(string(args))
+	if argText == "" || argText == "null" {
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(args, &m); err != nil {
+		var s string
+		if json.Unmarshal(args, &s) == nil && strings.TrimSpace(s) != "" {
+			return truncateOneLine(s, 300)
+		}
+		return truncateOneLine(argText, 300)
+	}
+	jsonString := func(key string) string {
+		v, ok := m[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		if json.Unmarshal(v, &s) != nil {
+			return ""
+		}
+		return strings.TrimSpace(s)
+	}
+	switch toolName {
+	case "read", "write", "edit":
+		if p := jsonString("path"); p != "" {
+			return truncateOneLine(p, 400)
+		}
+	case "bash":
+		if c := jsonString("command"); c != "" {
+			return truncateOneLine(c, 400)
+		}
+	case "list":
+		dir := jsonString("path")
+		if dir == "" {
+			dir = "."
+		}
+		if g := jsonString("glob"); g != "" {
+			return truncateOneLine(dir+" glob="+g, 400)
+		}
+		return truncateOneLine(dir, 400)
+	case "grep":
+		pat := jsonString("pattern")
+		root := jsonString("path")
+		if root == "" {
+			root = "."
+		}
+		if pat != "" {
+			return truncateOneLine(pat+" in "+root, 400)
+		}
+	case "rag_search":
+		if q := jsonString("query"); q != "" {
+			return truncateOneLine(q, 300)
+		}
+	case "memory_recall":
+		if q := jsonString("query"); q != "" {
+			return truncateOneLine(q, 300)
+		}
+	}
+	return compactJSONArgsForDisplay(m, 300)
+}
+
+func formatToolGTLine(toolName string, args []byte) string {
 	toolName = strings.TrimSpace(toolName)
 	if toolName == "" {
 		toolName = "unknown"
 	}
-	id := strings.TrimSpace(toolCallID)
+	detail := strings.TrimSpace(toolExecuteDetailForDisplay(toolName, args))
+	if detail == "" {
+		return "Tool > " + toolName
+	}
+	return "Tool > " + toolName + " " + detail
+}
 
-	// Prefer tool result content from message; fall back to execErr.
-	content := ""
-	isError := false
-	if msg != nil {
-		content = strings.TrimSpace(msg.ContentBlocksToText())
-		isError = msg.IsError
+func formatToolGTLineWithStatus(toolName string, args []byte, status string) string {
+	base := formatToolGTLine(toolName, args)
+	s := strings.TrimSpace(status)
+	if s == "" {
+		return base
 	}
-	if content == "" && execErr != nil {
-		content = strings.TrimSpace(execErr.Error())
-		isError = true
-	}
-
-	status := "ok"
-	if isError || execErr != nil {
-		status = "error"
-	}
-
-	// Claude-code-like: show end marker, and include args/output in the block.
-	head := fmt.Sprintf("Tool < %s (%s)", toolName, status)
-	if id != "" {
-		head += " (" + id + ")"
-	}
-	lines := []string{head}
-
-	argText := strings.TrimSpace(string(args))
-	if argText != "" && argText != "null" {
-		lines = append(lines, "  args: "+argText)
-	}
-
-	if content == "" {
-		return lines
-	}
-
-	preview := content
-	// line cap first (keeps structure), then char cap.
-	if split := strings.Split(preview, "\n"); len(split) > maxPreviewLines {
-		preview = strings.Join(split[:maxPreviewLines], "\n") + "\n…"
-	}
-	if len(preview) > maxPreviewChars {
-		preview = preview[:maxPreviewChars] + "…"
-	}
-
-	// Indent preview for readability.
-	for _, line := range strings.Split(preview, "\n") {
-		if strings.TrimSpace(line) == "" {
-			lines = append(lines, "  ")
-			continue
-		}
-		lines = append(lines, "  out: "+line)
-	}
-	return lines
+	return base + " · " + s
 }
 
 // Run launches the TUI. If sessionPath is empty, a new session file is created under config session root.
@@ -1376,6 +1562,19 @@ func renderHistoryLinesFromMessage(m communi.Message) []string {
 		}
 		return lines
 	case keys.AgentRoleTool:
+		name := ""
+		var args []byte
+		if m.ToolCall != nil {
+			name = strings.TrimSpace(m.ToolCall.Name)
+			args = m.ToolCall.Arguments
+		}
+		if name != "" {
+			st := "ok"
+			if m.IsError {
+				st = "error"
+			}
+			return []string{formatToolGTLineWithStatus(name, args, st)}
+		}
 		if content == "" {
 			return nil
 		}

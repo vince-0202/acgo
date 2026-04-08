@@ -21,7 +21,7 @@ type Tool interface {
 	Execute(ctx context.Context, toolCallID string, args json.RawMessage, update ToolUpdateFunc) communi.ToolCallResult
 }
 
-func NewToolController(agentId string, cc *ContextController, emf func(e communi.AgentEvent), tools ...Tool) *ToolController {
+func NewToolController(agentId string, cc *ContextController, emf func(e communi.AgentEvent), permissionController *PermissionController, tools ...Tool) *ToolController {
 	toolMap := make(map[string]Tool)
 	for _, tool := range tools {
 		toolMap[tool.Name()] = tool
@@ -29,6 +29,7 @@ func NewToolController(agentId string, cc *ContextController, emf func(e communi
 	return &ToolController{
 		agentId:           agentId,
 		tools:             toolMap,
+		permission:        permissionController,
 		contextController: cc,
 		pendingToolCalls:  make([]communi.ToolCallRequest, 0),
 		emitFunc:          emf,
@@ -38,6 +39,7 @@ func NewToolController(agentId string, cc *ContextController, emf func(e communi
 type ToolController struct {
 	agentId           string
 	tools             map[string]Tool
+	permission        *PermissionController
 	contextController *ContextController
 	pendingToolCalls  []communi.ToolCallRequest
 	emitFunc          func(e communi.AgentEvent)
@@ -77,6 +79,8 @@ func (tc *ToolController) Execute(ctx context.Context) {
 			toolMsg := communi.NewToolCallErrorMessage(
 				call.ID, ErrUnknownProvider(call.Name),
 			)
+			toolMsg.ToolCall.Name = call.Name
+			toolMsg.ToolCall.Arguments = args
 			tc.contextController.AppendMessage(toolMsg)
 			tc.emitFunc(communi.AgentEvent{
 				Type:       communi.EventToolExecutionEnd,
@@ -102,6 +106,8 @@ func (tc *ToolController) Execute(ctx context.Context) {
 
 		if err := ValidateToolArguments(tool.Name(), tool.JSONSchema(), args); err != nil {
 			toolMsg := communi.NewToolCallErrorMessage(call.ID, err)
+			toolMsg.ToolCall.Name = call.Name
+			toolMsg.ToolCall.Arguments = args
 			tc.contextController.AppendMessage(toolMsg)
 			tc.emitFunc(communi.AgentEvent{
 				Type:       communi.EventToolExecutionEnd,
@@ -115,6 +121,35 @@ func (tc *ToolController) Execute(ctx context.Context) {
 			})
 			slots[i].phase = "val_err"
 			continue
+		}
+		if tc.permission != nil {
+			_, err := tc.permission.Check(ctx, PermissionRequest{
+				Action:   "tool.execute",
+				Resource: "tool:" + tool.Name(),
+				Metadata: map[string]any{
+					"tool_call_id": call.ID,
+					"tool_name":    tool.Name(),
+					"tool_args":    string(args),
+				},
+			})
+			if err != nil {
+				toolMsg := communi.NewToolCallErrorMessage(call.ID, err)
+				toolMsg.ToolCall.Name = call.Name
+				toolMsg.ToolCall.Arguments = args
+				tc.contextController.AppendMessage(toolMsg)
+				tc.emitFunc(communi.AgentEvent{
+					Type:       communi.EventToolExecutionEnd,
+					AgentID:    tc.agentId,
+					ToolName:   tool.Name(),
+					ToolCallID: call.ID,
+					ToolArgs:   args,
+					Message:    &toolMsg,
+					Error:      err,
+					ErrorKind:  errors.ErrKindTool,
+				})
+				slots[i].phase = "val_err"
+				continue
+			}
 		}
 
 		slots[i] = slot{call: call, args: args, tool: tool, phase: "ok"}
@@ -139,7 +174,7 @@ func (tc *ToolController) Execute(ctx context.Context) {
 		args := slots[i].args
 		tool := slots[i].tool
 		result := slots[i].result
-		toolMsg, errVal := toolResultToMessage(call.ID, result)
+		toolMsg, errVal := toolResultToMessage(call, args, result)
 		tc.contextController.AppendMessage(toolMsg)
 		tc.emitFunc(communi.AgentEvent{
 			Type:       communi.EventToolExecutionEnd,
@@ -154,17 +189,21 @@ func (tc *ToolController) Execute(ctx context.Context) {
 	}
 }
 
-func toolResultToMessage(toolCallID string, result communi.ToolCallResult) (communi.Message, error) {
+func toolResultToMessage(call communi.ToolCallRequest, args json.RawMessage, result communi.ToolCallResult) (communi.Message, error) {
 	if result.IsError() {
-		toolMsg := communi.NewToolCallErrorMessage(toolCallID, result.Error)
+		toolMsg := communi.NewToolCallErrorMessage(call.ID, result.Error)
+		toolMsg.ToolCall.Name = call.Name
+		toolMsg.ToolCall.Arguments = args
 		return toolMsg, result.Error
 	}
 	toolMsg := communi.Message{
-		ID:      "tool-" + toolCallID,
+		ID:      "tool-" + call.ID,
 		Role:    keys.AgentRoleTool,
 		Content: result.Content,
 		ToolCall: &communi.ToolCallRequest{
-			ID: toolCallID,
+			ID:        call.ID,
+			Name:      call.Name,
+			Arguments: args,
 		},
 		IsError:  result.IsError(),
 		Metadata: result.Metadata,

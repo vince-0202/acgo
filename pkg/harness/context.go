@@ -3,11 +3,13 @@ package harness
 import (
 	"context"
 	"encoding/json"
-	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/keys"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/keys"
+	"github.com/vince-0202/acgo/pkg/llm"
 )
 
 const defaultSystemPrompt = `You are acgo, an interactive coding agent focused on software engineering tasks.
@@ -66,6 +68,12 @@ type ContextController struct {
 	Options  *ContextOptions
 	Messages []communi.Message `json:"messages"`
 	Cancel   context.CancelFunc
+
+	compactProvider         llm.Provider
+	compactModel            llm.Model
+	streamsSinceLastCompact int
+	everCompacted           bool
+	transcriptPath          string
 }
 
 func (cc *ContextController) Load() {
@@ -76,9 +84,21 @@ func (cc *ContextController) Load() {
 	}
 }
 
-// TrimMessage applies the trimming strategy defined by opts.
-func (cc *ContextController) TrimMessage() {
-	//todo:
+// SetTranscriptPath sets an optional path shown after LLM compaction (full transcript / session file).
+func (cc *ContextController) SetTranscriptPath(path string) {
+	if cc == nil {
+		return
+	}
+	cc.transcriptPath = strings.TrimSpace(path)
+}
+
+// SetCompactLLM wires provider and model for LLM-based context compaction inside TrimMessage.
+func (cc *ContextController) SetCompactLLM(p llm.Provider, m llm.Model) {
+	if cc == nil {
+		return
+	}
+	cc.compactProvider = p
+	cc.compactModel = m
 }
 
 func (cc *ContextController) MessageToJson() string {
@@ -125,6 +145,15 @@ type ContextOptions struct {
 	MaxEstimatedTokens int
 	// MinToolResultsToKeep is the minimum number of recent tool-result messages to always retain.
 	MinToolResultsToKeep int
+
+	// AutoCompactMinEstimatedTokens: when >0 and estimated tokens >= value, OR branch for auto LLM compact. 0 = ignore.
+	AutoCompactMinEstimatedTokens int
+	// AutoCompactMinUserTurns: when >0 and user message count >= value, OR branch for auto LLM compact. 0 = ignore.
+	AutoCompactMinUserTurns int
+	// AutoCompactCooldownStreams: require at least this many TrimMessage calls since last compact before auto again. 0 = no cooldown wait.
+	AutoCompactCooldownStreams int
+	// CompactExtraInstructions is appended to the compact rubric (optional).
+	CompactExtraInstructions string
 }
 
 func readFile(dir, name string) (content string, path string) {
