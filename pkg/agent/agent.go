@@ -240,9 +240,39 @@ func (a *Agent) EnqueueFollowUp(msg communi.Message) {
 // messages are consumed (steering first, then follow-up) and processed before returning.
 func (a *Agent) Prompt(ctx context.Context, content string) error {
 	turnID := utils.SnowflakeIDString()
+	return a.promptWithInitialMessage(ctx, communi.NewUserMessage(turnID, content))
+}
+
+// PromptMessage sends an arbitrary initial message (system/user/etc.) and then
+// runs the same tool+LLM loop as Prompt.
+func (a *Agent) PromptMessage(ctx context.Context, msg communi.Message) error {
+	return a.promptWithInitialMessage(ctx, msg)
+}
+
+// PromptScheduledTask runs one turn triggered by a scheduled job. The task text is
+// sent as a single user message with SuppressTranscript so UIs do not show it; the
+// content is written as a system-style instruction plus the task description so the
+// model replies in chat. (A bare trailing system message does not reliably produce
+// an assistant reply and breaks turn segmentation when only system is appended.)
+func (a *Agent) PromptScheduledTask(ctx context.Context, taskDescription string) error {
+	desc := strings.TrimSpace(taskDescription)
+	if desc == "" {
+		desc = "(no description)"
+	}
+	// User role is required for correct turn boundaries in context trimming; metadata hides from UI.
+	msg := communi.NewUserMessageWithoutId(scheduledTaskUserContent(desc))
+	msg.AppendMetadata(communi.MetaSuppressTranscript, true)
+	return a.promptWithInitialMessageSilentFirstEmit(ctx, msg)
+}
+
+func scheduledTaskUserContent(task string) string {
+	return "【系统调度·勿向用户复述本段】请立即用简短、自然的语言直接回复用户，完成下列说明。" +
+		"不要提及定时任务、cron、任务编号或“系统调度”。\n\n任务说明：\n" + task
+}
+
+func (a *Agent) promptWithInitialMessageSilentFirstEmit(ctx context.Context, initialMsg communi.Message) error {
 	a.ensureSystemPromptMessage()
-	userMsg := communi.NewUserMessage(turnID, content)
-	a.contextController.AppendMessage(userMsg)
+	a.contextController.AppendMessage(initialMsg)
 	a.emit(communi.AgentEvent{Type: communi.EventAgentStart, AgentID: a.id})
 
 	var lastErr error
@@ -252,19 +282,68 @@ func (a *Agent) Prompt(ctx context.Context, content string) error {
 		currentTurnID := utils.SnowflakeIDString()
 		a.emit(communi.AgentEvent{Type: communi.EventTurnStart, AgentID: a.id, TurnID: currentTurnID})
 
-		var userTurnMsg *communi.Message
+		var turnMsg *communi.Message
 		if firstTurn {
-			a.emitUserMessage(currentTurnID, &userMsg)
-			userTurnMsg = &userMsg
 			firstTurn = false
+			turnMsg = &initialMsg
+			// Do not emit MessageStart/End for suppressed cron dispatch (no "You:" / system dump in UI).
+			if !initialMsg.SuppressTranscript() {
+				a.emitUserMessage(currentTurnID, &initialMsg)
+			}
 		} else {
-			userTurnMsg = a.emitNextQueuedMessage(currentTurnID)
-			if userTurnMsg == nil {
+			turnMsg = a.emitNextQueuedMessage(currentTurnID)
+			if turnMsg == nil {
 				break
 			}
 		}
-		if userTurnMsg != nil {
-			go a.memoryController.RecordWithMetaData(ctx, userTurnMsg, map[string]any{
+		if turnMsg != nil && !turnMsg.SuppressTranscript() {
+			go a.memoryController.RecordWithMetaData(ctx, turnMsg, map[string]any{
+				"turnID": currentTurnID,
+				"type":   "userAsk",
+			})
+		}
+
+		lastErr = a.runLLMTurnsUntilDone(ctx, currentTurnID)
+		if lastErr != nil {
+			break
+		}
+
+		go a.memoryController.RecordWithMetaData(ctx, a.contextController.LastAssistantMessage(), map[string]any{
+			"turnID": currentTurnID,
+			"type":   "assistant",
+		})
+	}
+
+	kind := errors.ClassifyError(lastErr)
+	a.emit(communi.AgentEvent{Type: communi.EventAgentEnd, AgentID: a.id, Error: lastErr, ErrorKind: kind})
+	return errors.WrapAgentError(lastErr, kind)
+}
+
+func (a *Agent) promptWithInitialMessage(ctx context.Context, initialMsg communi.Message) error {
+	a.ensureSystemPromptMessage()
+	a.contextController.AppendMessage(initialMsg)
+	a.emit(communi.AgentEvent{Type: communi.EventAgentStart, AgentID: a.id})
+
+	var lastErr error
+	firstTurn := true
+
+	for {
+		currentTurnID := utils.SnowflakeIDString()
+		a.emit(communi.AgentEvent{Type: communi.EventTurnStart, AgentID: a.id, TurnID: currentTurnID})
+
+		var turnMsg *communi.Message
+		if firstTurn {
+			a.emitUserMessage(currentTurnID, &initialMsg)
+			turnMsg = &initialMsg
+			firstTurn = false
+		} else {
+			turnMsg = a.emitNextQueuedMessage(currentTurnID)
+			if turnMsg == nil {
+				break
+			}
+		}
+		if turnMsg != nil {
+			go a.memoryController.RecordWithMetaData(ctx, turnMsg, map[string]any{
 				"turnID": currentTurnID,
 				"type":   "userAsk",
 			})

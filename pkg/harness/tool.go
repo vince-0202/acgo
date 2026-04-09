@@ -12,6 +12,34 @@ import (
 	"strings"
 )
 
+type toolExecutorContextKey struct{}
+
+// ToolExecutor exposes the minimal capability needed by orchestration tools.
+type ToolExecutor interface {
+	ExecuteByName(ctx context.Context, callID, toolName string, args json.RawMessage, opts ExecuteToolOptions) (communi.ToolCallResult, error)
+}
+
+// ExecuteToolOptions controls behavior for a single tool execution.
+type ExecuteToolOptions struct {
+	// AppendTranscript controls whether the tool result message is appended
+	// into the current conversation context.
+	AppendTranscript bool
+	// EmitEvents controls whether tool execution start/end events are emitted.
+	EmitEvents bool
+	// Update receives streaming progress updates from the tool.
+	Update ToolUpdateFunc
+}
+
+// ToolExecutorFromContext returns a ToolExecutor injected by ToolController.
+func ToolExecutorFromContext(ctx context.Context) (ToolExecutor, bool) {
+	v := ctx.Value(toolExecutorContextKey{})
+	if v == nil {
+		return nil, false
+	}
+	te, ok := v.(ToolExecutor)
+	return te, ok
+}
+
 // Tool is the interface implemented by all tools usable by the Agent.
 type Tool interface {
 	Name() string
@@ -63,126 +91,89 @@ func (tc *ToolController) Execute(ctx context.Context) {
 	calls := tc.pendingToolCalls
 	tc.pendingToolCalls = nil
 
-	type slot struct {
-		call   communi.ToolCallRequest
-		args   json.RawMessage
-		tool   Tool
-		phase  string // "unknown", "val_err", "ok"
-		result communi.ToolCallResult
+	ctx = context.WithValue(ctx, toolExecutorContextKey{}, tc)
+	for _, call := range calls {
+		_, _ = tc.ExecuteByName(ctx, call.ID, call.Name, call.Arguments, ExecuteToolOptions{
+			AppendTranscript: true,
+			EmitEvents:       true,
+		})
 	}
-	slots := make([]slot, len(calls))
+}
 
-	for i, call := range calls {
-		args := normalizeToolCallArguments(call.Arguments)
-		tool, ok := tc.FindTool(call.Name)
-		if !ok {
-			toolMsg := communi.NewToolCallErrorMessage(
-				call.ID, ErrUnknownProvider(call.Name),
-			)
-			toolMsg.ToolCall.Name = call.Name
-			toolMsg.ToolCall.Arguments = args
-			tc.contextController.AppendMessage(toolMsg)
-			tc.emitFunc(communi.AgentEvent{
-				Type:       communi.EventToolExecutionEnd,
-				AgentID:    tc.agentId,
-				ToolName:   call.Name,
-				ToolCallID: call.ID,
-				ToolArgs:   args,
-				Message:    &toolMsg,
-				Error:      ErrUnknownProvider(call.Name),
-				ErrorKind:  errors.ErrKindTool,
-			})
-			slots[i].phase = "unknown"
-			continue
-		}
-		args = CoerceToolArguments(tool.JSONSchema(), args)
+// ExecuteByName executes a single tool call by tool name and arguments.
+// It reuses argument normalization/coercion/validation and permission checks.
+func (tc *ToolController) ExecuteByName(ctx context.Context, callID, toolName string, args json.RawMessage, opts ExecuteToolOptions) (communi.ToolCallResult, error) {
+	if tc == nil {
+		return communi.ErrorToolCallResult(callID, fmt.Errorf("tool controller is nil")), fmt.Errorf("tool controller is nil")
+	}
+	if opts.AppendTranscript && tc.contextController == nil {
+		return communi.ErrorToolCallResult(callID, fmt.Errorf("context controller is nil")), fmt.Errorf("context controller is nil")
+	}
+	ctx = context.WithValue(ctx, toolExecutorContextKey{}, tc)
+	toolCall := communi.ToolCallRequest{
+		ID:        callID,
+		Name:      toolName,
+		Arguments: normalizeToolCallArguments(args),
+	}
+	tool, ok := tc.FindTool(toolName)
+	if !ok {
+		err := ErrUnknownProvider(toolName)
+		res := communi.ErrorToolCallResult(callID, err)
+		tc.finalizeToolExecution(toolCall, toolName, toolCall.Arguments, res, opts)
+		return res, err
+	}
+
+	toolArgs := CoerceToolArguments(tool.JSONSchema(), toolCall.Arguments)
+	toolCall.Arguments = toolArgs
+	if opts.EmitEvents && tc.emitFunc != nil {
 		tc.emitFunc(communi.AgentEvent{
 			Type:       communi.EventToolExecutionStart,
 			AgentID:    tc.agentId,
 			ToolName:   tool.Name(),
-			ToolCallID: call.ID,
-			ToolArgs:   args,
+			ToolCallID: callID,
+			ToolArgs:   toolArgs,
 		})
-
-		if err := ValidateToolArguments(tool.Name(), tool.JSONSchema(), args); err != nil {
-			toolMsg := communi.NewToolCallErrorMessage(call.ID, err)
-			toolMsg.ToolCall.Name = call.Name
-			toolMsg.ToolCall.Arguments = args
-			tc.contextController.AppendMessage(toolMsg)
-			tc.emitFunc(communi.AgentEvent{
-				Type:       communi.EventToolExecutionEnd,
-				AgentID:    tc.agentId,
-				ToolName:   tool.Name(),
-				ToolCallID: call.ID,
-				ToolArgs:   args,
-				Message:    &toolMsg,
-				Error:      err,
-				ErrorKind:  errors.ErrKindTool,
-			})
-			slots[i].phase = "val_err"
-			continue
-		}
-		if tc.permission != nil {
-			_, err := tc.permission.Check(ctx, PermissionRequest{
-				Action:   "tool.execute",
-				Resource: "tool:" + tool.Name(),
-				Metadata: map[string]any{
-					"tool_call_id": call.ID,
-					"tool_name":    tool.Name(),
-					"tool_args":    string(args),
-				},
-			})
-			if err != nil {
-				toolMsg := communi.NewToolCallErrorMessage(call.ID, err)
-				toolMsg.ToolCall.Name = call.Name
-				toolMsg.ToolCall.Arguments = args
-				tc.contextController.AppendMessage(toolMsg)
-				tc.emitFunc(communi.AgentEvent{
-					Type:       communi.EventToolExecutionEnd,
-					AgentID:    tc.agentId,
-					ToolName:   tool.Name(),
-					ToolCallID: call.ID,
-					ToolArgs:   args,
-					Message:    &toolMsg,
-					Error:      err,
-					ErrorKind:  errors.ErrKindTool,
-				})
-				slots[i].phase = "val_err"
-				continue
-			}
-		}
-
-		slots[i] = slot{call: call, args: args, tool: tool, phase: "ok"}
 	}
 
-	for i := range slots {
-		if slots[i].phase != "ok" {
-			continue
-		}
-		call := slots[i].call
-		args := slots[i].args
-		tool := slots[i].tool
-		result := tool.Execute(ctx, call.ID, args, nil)
-		slots[i].result = result
+	if err := ValidateToolArguments(tool.Name(), tool.JSONSchema(), toolArgs); err != nil {
+		res := communi.ErrorToolCallResult(callID, err)
+		tc.finalizeToolExecution(toolCall, tool.Name(), toolArgs, res, opts)
+		return res, err
 	}
-
-	for i := range slots {
-		if slots[i].phase != "ok" {
-			continue
+	if tc.permission != nil {
+		_, err := tc.permission.Check(ctx, PermissionRequest{
+			Action:   "tool.execute",
+			Resource: "tool:" + tool.Name(),
+			Metadata: map[string]any{
+				"tool_call_id": callID,
+				"tool_name":    tool.Name(),
+				"tool_args":    string(toolArgs),
+			},
+		})
+		if err != nil {
+			res := communi.ErrorToolCallResult(callID, err)
+			tc.finalizeToolExecution(toolCall, tool.Name(), toolArgs, res, opts)
+			return res, err
 		}
-		call := slots[i].call
-		args := slots[i].args
-		tool := slots[i].tool
-		result := slots[i].result
-		toolMsg, errVal := toolResultToMessage(call, args, result)
-		tc.contextController.AppendMessage(toolMsg)
+	}
+	res := tool.Execute(ctx, callID, toolArgs, opts.Update)
+	tc.finalizeToolExecution(toolCall, tool.Name(), toolArgs, res, opts)
+	return res, res.Error
+}
+
+func (tc *ToolController) finalizeToolExecution(call communi.ToolCallRequest, toolName string, args json.RawMessage, result communi.ToolCallResult, opts ExecuteToolOptions) {
+	msg, errVal := toolResultToMessage(call, args, result)
+	if opts.AppendTranscript {
+		tc.contextController.AppendMessage(msg)
+	}
+	if opts.EmitEvents && tc.emitFunc != nil {
 		tc.emitFunc(communi.AgentEvent{
 			Type:       communi.EventToolExecutionEnd,
 			AgentID:    tc.agentId,
-			ToolName:   tool.Name(),
+			ToolName:   toolName,
 			ToolCallID: call.ID,
 			ToolArgs:   args,
-			Message:    &toolMsg,
+			Message:    &msg,
 			Error:      errVal,
 			ErrorKind:  errors.ErrKindTool,
 		})

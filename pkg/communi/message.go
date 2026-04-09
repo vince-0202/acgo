@@ -138,3 +138,26 @@ func NewTextContentBlock(text string) *ContentBlock {
 		Text: text,
 	}
 }
+
+// MetaSuppressTranscript marks a user message that should not appear in chat UIs
+// (e.g. internal cron dispatch). Handled by TUI and similar surfaces.
+const MetaSuppressTranscript = "acgo.suppress_transcript"
+
+// SuppressTranscript reports whether this message should be hidden from transcripts.
+func (m *Message) SuppressTranscript() bool {
+	if m == nil || m.Metadata == nil {
+		return false
+	}
+	v, ok := m.Metadata[MetaSuppressTranscript]
+	if !ok {
+		return false
+	}
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		return x == "1" || x == "true" || x == "yes"
+	default:
+		return false
+	}
+}

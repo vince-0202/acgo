@@ -83,6 +83,12 @@ func WithDefaultTools() AgentBuilderOption {
 		tools.NewEditTool(),
 		tools.NewGrepTool(),
 		tools.NewListTool(),
+		tools.NewWebFetchTool(),
+		tools.NewWebSearchTool(),
+		tools.NewCronCreateTool(),
+		tools.NewCronDeleteTool(),
+		tools.NewCronListTool(),
+		tools.NewToolFlowTool(),
 		tools.NewRagTool(),
 		tools.NewMemoryRecallTool(),
 	}

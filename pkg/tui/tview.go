@@ -146,11 +146,48 @@ func runWithTView(m *Model) error {
 	rightPanel.SetBorder(true).SetTitle(" Runtime")
 	var root *tview.Flex
 	panelContainer := tview.NewFlex().SetDirection(tview.FlexRow)
+	subGrid := tview.NewFlex().SetDirection(tview.FlexRow)
 	mainPanel := tview.NewFlex().SetDirection(tview.FlexRow)
 	subViews := map[string]*tview.TextView{}
 	subInputs := map[string]*tview.InputField{}
 	subPanels := map[string]*tview.Flex{}
 	subInputBound := map[string]bool{}
+	const subAgentsPerRow = 3
+	rebuildSubAgentGrid := func(ids []string) {
+		subGrid.Clear()
+		for i := 0; i < len(ids); i += subAgentsPerRow {
+			row := tview.NewFlex().SetDirection(tview.FlexColumn)
+			end := i + subAgentsPerRow
+			if end > len(ids) {
+				end = len(ids)
+			}
+			for j := i; j < end; j++ {
+				sid := ids[j]
+				p := subPanels[sid]
+				if p == nil {
+					continue
+				}
+				row.AddItem(p, 0, 1, false)
+			}
+			if row.GetItemCount() == 0 {
+				continue
+			}
+			subGrid.AddItem(row, 0, 1, false)
+		}
+		// Before panelContainer is wired (early refresh), skip attach/detach.
+		if panelContainer.GetItemCount() == 0 {
+			return
+		}
+		if len(ids) == 0 {
+			if panelContainer.GetItemCount() > 1 {
+				panelContainer.RemoveItem(subGrid)
+			}
+			return
+		}
+		if panelContainer.GetItemCount() == 1 {
+			panelContainer.AddItem(subGrid, 0, 1, true)
+		}
+	}
 	focusKeys := []string{"main"}
 	activeKey := "main"
 	permissionAwaiting := false
@@ -167,6 +204,12 @@ func runWithTView(m *Model) error {
 	targetUsageIn := 0
 	targetUsageOut := 0
 	targetUsageTotal := 0
+	seenMessageIDs := map[string]bool{}
+	for _, msg := range m.agent.GetMessages() {
+		if strings.TrimSpace(msg.ID) != "" {
+			seenMessageIDs[msg.ID] = true
+		}
+	}
 
 	advanceUsageDisplay := func() bool {
 		nextIn := animateTowards(displayUsageIn, targetUsageIn)
@@ -199,7 +242,6 @@ func runWithTView(m *Model) error {
 		subViews[subID] = tv
 		subInputs[subID] = in
 		subPanels[subID] = panel
-		panelContainer.AddItem(panel, 0, 3, false)
 		return tv, in, panel
 	}
 
@@ -366,13 +408,13 @@ func runWithTView(m *Model) error {
 			if keep {
 				continue
 			}
-			panelContainer.RemoveItem(subPanels[sid])
 			delete(subViews, sid)
 			delete(subInputs, sid)
 			delete(subPanels, sid)
 			delete(subInputBound, sid)
 			delete(subStreaming, sid)
 		}
+		rebuildSubAgentGrid(ids)
 		applyFocusStyle()
 	}
 
@@ -673,7 +715,7 @@ func runWithTView(m *Model) error {
 		updateHelpText()
 	})
 
-	panelContainer.AddItem(mainPanel, 0, 3, true)
+	panelContainer.AddItem(mainPanel, 0, 1, true)
 	bottomPanel := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(leftPanel, 0, 1, false).
 		AddItem(rightPanel, 42, 0, false)
@@ -962,16 +1004,117 @@ func runWithTView(m *Model) error {
 			if keep {
 				continue
 			}
-			panelContainer.RemoveItem(subPanels[sid])
 			delete(subViews, sid)
 			delete(subInputs, sid)
 			delete(subPanels, sid)
 			delete(subInputBound, sid)
 			delete(subStreaming, sid)
 		}
+		rebuildSubAgentGrid(ids)
 		applyFocusStyle()
 	}
 	refresh()
+
+	// Keep a long-lived listener so background-triggered turns (e.g. cron tasks)
+	// are reflected in TUI even when no foreground runAgentStream is active.
+	backgroundUnsub := m.agent.Subscribe(func(e communi.AgentEvent) {
+		app.QueueUpdateDraw(func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if mainStreaming {
+				// Foreground stream path already renders these events.
+				return
+			}
+			if e.LlmEvent != nil && e.LlmEvent.Usage != nil {
+				m.accumulateSessionUsage(e.LlmEvent.Usage)
+			}
+			if m.session != nil && e.Message != nil {
+				switch e.Type {
+				case communi.EventMessageEnd, communi.EventToolExecutionEnd:
+					_ = m.session.AppendMessage(*e.Message)
+				}
+			}
+			if e.Message != nil && strings.TrimSpace(e.Message.ID) != "" {
+				seenMessageIDs[e.Message.ID] = true
+			}
+			switch e.Type {
+			case communi.EventMessageStart:
+				if e.Message != nil && e.Message.Role == keys.AgentRoleUser {
+					if e.Message.SuppressTranscript() {
+						break
+					}
+					content := strings.TrimSpace(e.Message.ContentBlocksToText())
+					if content != "" {
+						m.history = append(m.history, "You: "+content)
+					}
+				}
+			case communi.EventMessageEnd:
+				if e.Message == nil {
+					return
+				}
+				if e.Message.Role == keys.AgentRoleAssistant {
+					thinking := strings.TrimSpace(e.Message.Thinking)
+					content := strings.TrimSpace(e.Message.ContentBlocksToText())
+					if thinking != "" {
+						m.history = append(m.history, "[Thinking] "+thinking)
+					}
+					if content != "" {
+						m.history = append(m.history, "Assistant: "+content)
+					}
+				}
+			case communi.EventToolExecutionStart:
+				toolName := strings.TrimSpace(e.ToolName)
+				if toolName == "" {
+					toolName = "unknown"
+				}
+				m.applyToolLineStream("", &toolLineStreamEvent{
+					Phase:      toolLinePhaseStart,
+					ToolCallID: e.ToolCallID,
+					ToolName:   toolName,
+					ToolArgs:   e.ToolArgs,
+				})
+			case communi.EventToolExecutionEnd:
+				toolName := strings.TrimSpace(e.ToolName)
+				if toolName == "" {
+					toolName = "unknown"
+				}
+				m.applyToolLineStream("", &toolLineStreamEvent{
+					Phase:      toolLinePhaseEnd,
+					ToolCallID: e.ToolCallID,
+					ToolName:   toolName,
+					ToolArgs:   e.ToolArgs,
+					Failed:     e.Error != nil || (e.Message != nil && e.Message.IsError),
+				})
+			case communi.EventTurnEnd:
+				// Fallback for background turns: if MessageEnd wasn't observed for any reason,
+				// pull the newest assistant message from context and render once by message ID.
+				msgs := m.agent.GetMessages()
+				for i := len(msgs) - 1; i >= 0; i-- {
+					msg := msgs[i]
+					if msg.Role != keys.AgentRoleAssistant {
+						continue
+					}
+					if strings.TrimSpace(msg.ID) != "" && seenMessageIDs[msg.ID] {
+						break
+					}
+					thinking := strings.TrimSpace(msg.Thinking)
+					content := strings.TrimSpace(msg.ContentBlocksToText())
+					if thinking != "" {
+						m.history = append(m.history, "[Thinking] "+thinking)
+					}
+					if content != "" {
+						m.history = append(m.history, "Assistant: "+content)
+					}
+					if strings.TrimSpace(msg.ID) != "" {
+						seenMessageIDs[msg.ID] = true
+					}
+					break
+				}
+			}
+			refresh()
+		})
+	})
+	defer backgroundUnsub()
 
 	stopUsageAnim := make(chan struct{})
 	go func() {

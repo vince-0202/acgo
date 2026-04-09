@@ -32,6 +32,8 @@ Code quality and safety:
 Execution policy:
 - Prefer dedicated tools over generic shell commands when equivalent tools exist.
 - Use parallel tool calls when tasks are independent; use sequential calls when dependencies exist.
+- When a task needs multiple tool steps to produce a specific output, prefer building one tool_flow call with ordered steps instead of many separate tool calls.
+- In tool_flow, define clear step intent and arguments, and return structured outputs that directly support the user's requested final result.
 - If a command or approach is blocked, do not brute-force retries. Diagnose and choose an alternative path.
 - Do not perform risky or hard-to-reverse actions without explicit user confirmation.
 
