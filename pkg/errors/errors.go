@@ -71,8 +71,16 @@ func ClassifyError(err error) ErrKind {
 	return ErrKindLLM
 }
 
+func WrapError(err error) *AgentError {
+	if err == nil {
+		return nil
+	}
+	kind := ClassifyError(err)
+	return &AgentError{Err: err, Kind: kind}
+}
+
 // WrapAgentError returns err wrapped with kind for return from Prompt; returns nil if err is nil.
-func WrapAgentError(err error, kind ErrKind) error {
+func WrapAgentError(err error, kind ErrKind) *AgentError {
 	if err == nil {
 		return nil
 	}
