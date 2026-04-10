@@ -426,6 +426,9 @@ func (a *Agent) runOneStreamTurn(ctx context.Context, turnID string) (err error,
 		llmMessages = append([]communi.Message(nil), llmMessages...)
 		llmMessages = append(llmMessages, communi.NewSystemMessageWithoutId(planModeInstructionPrompt))
 	}
+	if add := a.subAgentCoordinationAddendum(); add != "" {
+		llmMessages = append(append([]communi.Message(nil), llmMessages...), communi.NewSystemMessageWithoutId(add))
+	}
 
 	events, streamErr := a.Provider.Stream(ctx, a.Model, llmMessages, opts)
 	if streamErr != nil {

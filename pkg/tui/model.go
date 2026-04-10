@@ -905,6 +905,12 @@ func (m *Model) statusLine() string {
 			}
 		}
 		parts = append(parts, "scroll:"+focus+"(Shift+Tab)")
+		if sac := m.agent.SubAgentController(); sac != nil {
+			if recent := sac.RecentMessages(1); len(recent) > 0 {
+				last := recent[len(recent)-1]
+				parts = append(parts, "msg:"+last.FromSubID+"->"+last.ToSubID)
+			}
+		}
 	}
 	status := strings.Join(parts, " | ")
 	if m.session != nil && m.session.Path != "" {
@@ -1278,6 +1284,9 @@ func (m *Model) subAgentGridView(wrapWidth, subRegionH int) string {
 			m.subViewports[info.SubID] = vp
 
 			title := fmt.Sprintf("Sub: %s", info.SubID)
+			if strings.TrimSpace(info.Role) != "" {
+				title += " [" + strings.TrimSpace(info.Role) + "]"
+			}
 			cell := renderAgentPanel(cellW, title, vp.View())
 			cells = append(cells, cell)
 		}

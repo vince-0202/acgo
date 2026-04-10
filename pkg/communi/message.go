@@ -143,6 +143,14 @@ func NewTextContentBlock(text string) *ContentBlock {
 // (e.g. internal cron dispatch). Handled by TUI and similar surfaces.
 const MetaSuppressTranscript = "acgo.suppress_transcript"
 
+const (
+	MetaMsgType       = "acgo.msg_type"
+	MetaFromAgent     = "acgo.from"
+	MetaToAgent       = "acgo.to"
+	MetaIntent        = "acgo.intent"
+	MetaCorrelationID = "acgo.correlation_id"
+)
+
 // SuppressTranscript reports whether this message should be hidden from transcripts.
 func (m *Message) SuppressTranscript() bool {
 	if m == nil || m.Metadata == nil {

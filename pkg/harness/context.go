@@ -31,6 +31,7 @@ Code quality and safety:
 
 Execution policy:
 - Prefer dedicated tools over generic shell commands when equivalent tools exist.
+- When registered sub-agents exist (via the sub_agent tool), prefer delegating substantive work—implementation, codebase exploration, and long tool chains—to them. Act as coordinator: decompose goals, assign tasks to the right sub_id, integrate outputs, and resolve blockers. Use your own tools mainly for trivial one-offs or when delegation does not fit. When creating sub-agents, give each a distinct profile so in-scope work, hard constraints, and peer collaboration limits are explicit and non-overlapping.
 - Use parallel tool calls when tasks are independent; use sequential calls when dependencies exist.
 - When a task needs multiple tool steps to produce a specific output, prefer building one tool_flow call with ordered steps instead of many separate tool calls.
 - In tool_flow, define clear step intent and arguments, and return structured outputs that directly support the user's requested final result.
