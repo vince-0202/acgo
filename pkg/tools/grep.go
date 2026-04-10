@@ -62,6 +62,7 @@ func (t *grepTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	if root == "" {
 		root = "."
 	}
+	root = harness.ResolveToolPath(ctx, root)
 	maxResults := int(params.MaxResults)
 	if maxResults <= 0 {
 		maxResults = defaultGrepMaxResults

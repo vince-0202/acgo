@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,13 +65,15 @@ func NewContextController(agentId, workDir string) *ContextController {
 // ContextController contains the full list of messages for a call.
 // It can be freely manipulated before being passed to a provider.
 type ContextController struct {
-	agentId  string
-	workDir  string
-	Paths    []string // File paths that were read (for logging/debug)
-	Prompt   string   // Final merged system prompt
-	Options  *ContextOptions
-	Messages []communi.Message `json:"messages"`
-	Cancel   context.CancelFunc
+	agentId string
+	workDir string
+	// projectRoot, when set, overrides workDir for Load() (SYSTEM.md / AGENTS.md walk) and tool working directory.
+	projectRoot string
+	Paths       []string // File paths that were read (for logging/debug)
+	Prompt      string   // Final merged system prompt
+	Options     *ContextOptions
+	Messages    []communi.Message `json:"messages"`
+	Cancel      context.CancelFunc
 
 	compactProvider         llm.Provider
 	compactModel            llm.Model
@@ -81,10 +84,74 @@ type ContextController struct {
 
 func (cc *ContextController) Load() {
 	cc.Prompt = defaultSystemPrompt
-	cc.applyDir(cc.workDir)
-	for _, d := range cc.dirsFromRootToCwd(cc.workDir) {
+	cc.Paths = nil
+	root := cc.effectiveContextRoot()
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		absRoot = root
+	}
+	cc.applyDir(absRoot)
+	for _, d := range cc.dirsFromRootToCwd(absRoot) {
 		cc.applyDir(d)
 	}
+}
+
+func (cc *ContextController) effectiveContextRoot() string {
+	if cc == nil {
+		return "."
+	}
+	if s := strings.TrimSpace(cc.projectRoot); s != "" {
+		return filepath.Clean(s)
+	}
+	return cc.workDir
+}
+
+// SetProjectRoot sets the agent's project directory (git worktree or any checkout). Empty clears the override.
+func (cc *ContextController) SetProjectRoot(dir string) error {
+	if cc == nil {
+		return fmt.Errorf("context controller is nil")
+	}
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		cc.projectRoot = ""
+		return nil
+	}
+	abs, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return err
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("not a directory: %s", abs)
+	}
+	cc.projectRoot = abs
+	return nil
+}
+
+// ProjectRoot returns the optional project override path, or "" if unset.
+func (cc *ContextController) ProjectRoot() string {
+	if cc == nil {
+		return ""
+	}
+	return cc.projectRoot
+}
+
+// ToolWorkingDirectory is the directory tools should use as cwd and for relative paths.
+func (cc *ContextController) ToolWorkingDirectory() string {
+	if cc == nil {
+		return ""
+	}
+	if s := strings.TrimSpace(cc.projectRoot); s != "" {
+		return s
+	}
+	abs, err := filepath.Abs(cc.workDir)
+	if err != nil {
+		return cc.workDir
+	}
+	return abs
 }
 
 // SetTranscriptPath sets an optional path shown after LLM compaction (full transcript / session file).

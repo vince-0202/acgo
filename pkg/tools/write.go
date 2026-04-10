@@ -43,12 +43,13 @@ func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.Ra
 	if err := json.Unmarshal(args, &params); err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
-	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
+	path := harness.ResolveToolPath(ctx, params.Path)
+	if err := os.WriteFile(path, []byte(params.Content), 0o644); err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
 	return communi.NewToolCallResult(
 		toolCallID,
-		fmt.Sprintf("wrote %d bytes to %s", len(params.Content), params.Path),
+		fmt.Sprintf("wrote %d bytes to %s", len(params.Content), path),
 	)
 }
 

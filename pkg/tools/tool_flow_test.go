@@ -120,8 +120,11 @@ func TestToolFlow_StopOnError(t *testing.T) {
 		AppendTranscript: false,
 		EmitEvents:       false,
 	})
-	if err == nil {
-		t.Fatal("expected error from first failed step")
+	if err != nil {
+		t.Fatalf("tool_flow should return JSON report, not a top-level error: %v", err)
+	}
+	if res.IsError() {
+		t.Fatalf("unexpected tool_flow error result: %v", res.Error)
 	}
 	var report struct {
 		Status         string `json:"status"`

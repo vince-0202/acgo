@@ -34,6 +34,14 @@ func NewSkillsController(workDir string) *SkillsController {
 	return &SkillsController{workDir: workDir}
 }
 
+// SetWorkDir updates the project directory used to resolve <project>/.acgo/skills.
+func (sc *SkillsController) SetWorkDir(workDir string) {
+	if sc == nil {
+		return
+	}
+	sc.workDir = strings.TrimSpace(workDir)
+}
+
 // Load reads system (~/.acgo/skills) then project (<workDir>/.acgo/skills).
 // Project skills override system skills when the name collides.
 func (sc *SkillsController) Load() {

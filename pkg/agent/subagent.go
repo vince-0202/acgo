@@ -94,6 +94,9 @@ func (c *SubAgentController) CreateWithOptions(opts harness.SubAgentCreateOption
 		MemoryWriter:        nil,
 		DisableSubAgentTool: true,
 	})
+	if pr := strings.TrimSpace(c.parent.ProjectRoot()); pr != "" {
+		_ = child.applyProjectRoot(pr)
+	}
 	if injected := subAgentRolePrompt(profile); injected != "" {
 		child.contextController.AppendSystemPrompt("\n\n" + injected)
 	} else {

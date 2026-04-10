@@ -3,10 +3,13 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/vince-0202/acgo/pkg/communi"
+	"io"
 	"strings"
+	"time"
 
+	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/config"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
@@ -66,6 +69,31 @@ func (c *Client) Name() string { return c.provider }
 
 func (c *Client) Models() []llm.Model { return c.models }
 
+const maxOpenAIStreamAttempts = 3
+
+// isRetryableOpenAIStreamErr detects transient SSE/JSON parse failures from OpenAI-compatible
+// providers (e.g. DeepSeek) where a chunk is truncated or the connection drops mid-line.
+func isRetryableOpenAIStreamErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var syn *json.SyntaxError
+	if errors.As(err, &syn) {
+		return true
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "unexpected end of JSON input") {
+		return true
+	}
+	if strings.Contains(msg, "invalid character") && strings.Contains(strings.ToLower(msg), "json") {
+		return true
+	}
+	return false
+}
+
 func (c *Client) Stream(ctx context.Context, model llm.Model, message []communi.Message, opts *llm.Options) (<-chan communi.LLMEvent, error) {
 	out := make(chan communi.LLMEvent)
 	go func() {
@@ -79,52 +107,89 @@ func (c *Client) Stream(ctx context.Context, model llm.Model, message []communi.
 		params := c.buildChatCompletionNewParams(message, model, opts, true)
 		// Suppress full request payload logs to avoid noisy output.
 
-		stream := c.oai.Chat.Completions.NewStreaming(ctx, params)
-		if err := stream.Err(); err != nil {
-			log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
-				"error": err.Error(),
-			}))
-			out <- communi.LLMEvent{Type: communi.EventError, Error: err}
-			return
-		}
-
-		out <- communi.LLMEvent{Type: communi.EventStart}
-
-		st := &streamState{}
 		var (
+			st         *streamState
 			sawFinish  bool
 			stopReason string
 		)
 
-		for stream.Next() {
-			chunk := stream.Current()
-			//record usage
-			st.applyUsage(chunk)
-			if len(chunk.Choices) == 0 {
-				continue
-			}
-			choice := chunk.Choices[0]
-			if st.processDelta(choice.Delta, out) {
-				// processDelta currently only updates state and emits incremental events.
-				// Done events are emitted after the stream ends, so that usage deltas
-				// are applied first when present.
+		for attempt := 0; attempt < maxOpenAIStreamAttempts; attempt++ {
+			if attempt > 0 {
+				backoff := time.Duration(200*attempt) * time.Millisecond
+				select {
+				case <-ctx.Done():
+					out <- communi.LLMEvent{Type: communi.EventError, Error: ctx.Err()}
+					return
+				case <-time.After(backoff):
+				}
+				log.Debugf("[llm][provider=%s][mode=stream] retrying stream (attempt %d/%d)", c.provider, attempt+1, maxOpenAIStreamAttempts)
 			}
 
-			if choice.FinishReason != "" {
-				// Preserve the first non-empty finish_reason (should match the whole request).
-				if !sawFinish {
-					sawFinish = true
-					stopReason = choice.FinishReason
+			stream := c.oai.Chat.Completions.NewStreaming(ctx, params)
+			if err := stream.Err(); err != nil {
+				if isRetryableOpenAIStreamErr(err) && attempt+1 < maxOpenAIStreamAttempts {
+					log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
+						"error": err.Error(), "retry": true,
+					}))
+					_ = stream.Close()
+					continue
+				}
+				log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
+					"error": err.Error(),
+				}))
+				out <- communi.LLMEvent{Type: communi.EventError, Error: err}
+				return
+			}
+
+			out <- communi.LLMEvent{Type: communi.EventStart}
+
+			st = &streamState{}
+			sawFinish = false
+			stopReason = ""
+			hadChunk := false
+
+			for stream.Next() {
+				hadChunk = true
+				chunk := stream.Current()
+				//record usage
+				st.applyUsage(chunk)
+				if len(chunk.Choices) == 0 {
+					continue
+				}
+				choice := chunk.Choices[0]
+				if st.processDelta(choice.Delta, out) {
+					// processDelta currently only updates state and emits incremental events.
+					// Done events are emitted after the stream ends, so that usage deltas
+					// are applied first when present.
+				}
+
+				if choice.FinishReason != "" {
+					// Preserve the first non-empty finish_reason (should match the whole request).
+					if !sawFinish {
+						sawFinish = true
+						stopReason = choice.FinishReason
+					}
 				}
 			}
-		}
 
-		if err := stream.Err(); err != nil {
-			log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
-				"error": err.Error(),
-			}))
-			out <- communi.LLMEvent{Type: communi.EventError, Error: err}
-			return
+			streamErr := stream.Err()
+			_ = stream.Close()
+
+			if streamErr != nil {
+				if isRetryableOpenAIStreamErr(streamErr) && !hadChunk && attempt+1 < maxOpenAIStreamAttempts {
+					log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
+						"error": streamErr.Error(), "retry": true,
+					}))
+					continue
+				}
+				log.Debugf("[llm][provider=%s][mode=stream] response=%s", c.provider, marshalJSON(map[string]any{
+					"error": streamErr.Error(),
+				}))
+				out <- communi.LLMEvent{Type: communi.EventError, Error: streamErr}
+				return
+			}
+
+			break
 		}
 
 		if sawFinish {

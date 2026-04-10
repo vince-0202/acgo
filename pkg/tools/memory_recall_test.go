@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/memory"
 )
 
@@ -57,18 +56,16 @@ func TestMemoryRecallTool_ParseAndFormat(t *testing.T) {
 
 	ctx := memory.WithSessionID(context.Background(), "sess-1")
 	args := json.RawMessage(`{"query":"q1","memory_types":["dialogue_raw"],"top_k":3}`)
-	res, err := tool.Execute(ctx, "call-1", args, nil)
-	if err != nil {
-		t.Fatalf("Execute err: %v", err)
+	res := tool.Execute(ctx, "call-1", args, nil)
+	if res.IsError() {
+		t.Fatalf("Execute returned IsError: %s", toolResultText(res))
 	}
-	if res.IsError {
-		t.Fatalf("Execute returned IsError: %v (%s)", res.IsError, res.Content)
+	out := toolResultText(res)
+	if !strings.Contains(out, "type=dialogue_raw") {
+		t.Fatalf("output missing type=dialogue_raw: %q", out)
 	}
-	if !strings.Contains(res.Content, "type=dialogue_raw") {
-		t.Fatalf("output missing type=dialogue_raw: %q", res.Content)
-	}
-	if !strings.Contains(res.Content, "Assistant: hello") {
-		t.Fatalf("output missing assistant content: %q", res.Content)
+	if !strings.Contains(out, "Assistant: hello") {
+		t.Fatalf("output missing assistant content: %q", out)
 	}
 
 	if store.lastTopK != 3 {
@@ -87,6 +84,4 @@ func TestMemoryRecallTool_ParseAndFormat(t *testing.T) {
 	if _, ok := store.lastFilters["session_id"]; ok {
 		t.Fatalf("expected no session_id filter, got %v", store.lastFilters["session_id"])
 	}
-
-	_ = agent.ToolResult{} // silence unused import paranoia if gofmt changes order
 }

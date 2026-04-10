@@ -92,6 +92,9 @@ func (tc *ToolController) Execute(ctx context.Context) {
 	tc.pendingToolCalls = nil
 
 	ctx = context.WithValue(ctx, toolExecutorContextKey{}, tc)
+	if tc.contextController != nil {
+		ctx = ContextWithToolWorkingDir(ctx, tc.contextController.ToolWorkingDirectory())
+	}
 	for _, call := range calls {
 		_, _ = tc.ExecuteByName(ctx, call.ID, call.Name, call.Arguments, ExecuteToolOptions{
 			AppendTranscript: true,
@@ -110,6 +113,9 @@ func (tc *ToolController) ExecuteByName(ctx context.Context, callID, toolName st
 		return communi.ErrorToolCallResult(callID, fmt.Errorf("context controller is nil")), fmt.Errorf("context controller is nil")
 	}
 	ctx = context.WithValue(ctx, toolExecutorContextKey{}, tc)
+	if tc.contextController != nil {
+		ctx = ContextWithToolWorkingDir(ctx, tc.contextController.ToolWorkingDirectory())
+	}
 	toolCall := communi.ToolCallRequest{
 		ID:        callID,
 		Name:      toolName,

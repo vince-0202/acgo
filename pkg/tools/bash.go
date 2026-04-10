@@ -44,6 +44,9 @@ func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-lc", params.Command)
+	if wd := harness.ToolWorkingDirFromContext(ctx); wd != "" {
+		cmd.Dir = wd
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)

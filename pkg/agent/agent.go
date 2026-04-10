@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -129,6 +130,36 @@ func (a *Agent) SetModel(m llm.Model) {
 	if a.contextController != nil {
 		a.contextController.SetCompactLLM(a.Provider, m)
 	}
+}
+
+func (a *Agent) applyProjectRoot(pr string) error {
+	if a.contextController == nil || a.skillsController == nil {
+		return fmt.Errorf("agent not fully initialized")
+	}
+	if err := a.contextController.SetProjectRoot(strings.TrimSpace(pr)); err != nil {
+		return err
+	}
+	a.skillsController.SetWorkDir(a.contextController.ToolWorkingDirectory())
+	a.skillsController.Load()
+	a.LoadContext()
+	return nil
+}
+
+// SetProjectRoot sets the workspace directory (e.g. a git worktree). Tools and relative paths use it;
+// SYSTEM.md / AGENTS.md load from this tree. Pass empty string to clear and fall back to the agent sandbox.
+func (a *Agent) SetProjectRoot(dir string) error {
+	if a == nil {
+		return fmt.Errorf("agent is nil")
+	}
+	return a.applyProjectRoot(dir)
+}
+
+// ProjectRoot returns the current project directory override, or "" if unset.
+func (a *Agent) ProjectRoot() string {
+	if a == nil || a.contextController == nil {
+		return ""
+	}
+	return a.contextController.ProjectRoot()
 }
 
 // CompactContext runs LLM-based context compaction (same as /compact). transcriptPath is optional suffix for full transcript.

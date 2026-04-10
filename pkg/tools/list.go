@@ -49,6 +49,7 @@ func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	if dir == "" {
 		dir = "."
 	}
+	dir = harness.ResolveToolPath(ctx, dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)

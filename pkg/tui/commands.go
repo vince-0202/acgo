@@ -322,4 +322,6 @@ func (m *Model) registerBuiltinCommands() {
 			return result.String(), false
 		},
 	})
+
+	m.registerWorktreeCommands()
 }

@@ -180,6 +180,9 @@ type Model struct {
 	// context files (P1.3)
 	workDir string
 
+	// sessionProjectDir is the process working directory when the TUI started (used to locate main git repo for /worktree).
+	sessionProjectDir string
+
 	// pendingSkillContent: when set, next user message is prefixed with this (for /skill <name>).
 	pendingSkillContent string
 
@@ -300,6 +303,10 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	if len(opts.Session.Message) > 0 {
 		ag.ReplaceMessages(opts.Session.Message)
 		model.history = append(model.history, renderHistoryFromMessages(opts.Session.Message)...)
+	}
+
+	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+		model.sessionProjectDir = cwd
 	}
 
 	model.registerBuiltinCommands()
@@ -891,6 +898,13 @@ func (m *Model) statusLine() string {
 	}
 	if st.Error != nil {
 		parts = append(parts, errors.FormatErrorForDisplay(st.Error))
+	}
+	if pr := strings.TrimSpace(m.agent.ProjectRoot()); pr != "" {
+		show := pr
+		if len(show) > 36 {
+			show = "…" + show[len(show)-34:]
+		}
+		parts = append(parts, "proj:"+show)
 	}
 	nSub := 0
 	if sac := m.agent.SubAgentController(); sac != nil {

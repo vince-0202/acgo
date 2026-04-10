@@ -48,10 +48,11 @@ func (t *editTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	if err := json.Unmarshal(args, &params); err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
-	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
+	path := harness.ResolveToolPath(ctx, params.Path)
+	if err := os.WriteFile(path, []byte(params.Content), 0o644); err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
-	return communi.NewToolCallResult(toolCallID, fmt.Sprintf("edited %s (%d bytes)", params.Path, len(params.Content)))
+	return communi.NewToolCallResult(toolCallID, fmt.Sprintf("edited %s (%d bytes)", path, len(params.Content)))
 }
 
 // NewEditTool creates a new edit AgentTool.

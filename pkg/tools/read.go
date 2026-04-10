@@ -43,7 +43,8 @@ func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 			return communi.ErrorToolCallResult(toolCallID, err)
 		}
 	}
-	data, err := os.ReadFile(params.Path)
+	path := harness.ResolveToolPath(ctx, params.Path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}

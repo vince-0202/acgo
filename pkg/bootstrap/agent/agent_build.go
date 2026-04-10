@@ -91,6 +91,13 @@ func WithDefaultTools() AgentBuilderOption {
 		tools.NewToolFlowTool(),
 		tools.NewRagTool(),
 		tools.NewMemoryRecallTool(),
+		tools.NewGitStatusTool(),
+		tools.NewGitDiffTool(),
+		tools.NewGitLogTool(),
+		tools.NewGitBranchTool(),
+		tools.NewGitAddTool(),
+		tools.NewGitCommitTool(),
+		tools.NewGitWorktreeTool(),
 	}
 	return func(config *AgentBuildConfig) {
 		config.UseTools = append(config.UseTools, builtinTools...)
