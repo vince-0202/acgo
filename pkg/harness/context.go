@@ -49,12 +49,12 @@ func (cc *ContextController) Name() string {
 	return "context"
 }
 
-func (cc *ContextController) Install(agent agent.AgentRuntime) (func(), error) {
-	cc.agent = agent
-	cc.context = agent.ContextManager()
+func (cc *ContextController) Install(runtime agent.AgentRuntime) (func(), error) {
+	cc.agent = runtime
+	cc.context = runtime.ContextManager()
 	cc.basePrompt = cc.context.SystemPrompt()
 	cc.loadPromptFromDisk()
-	unsub := agent.Subscribe(func(event agent.Event, abort func()) {
+	unsub := runtime.Subscribe(func(event agent.Event, abort func()) {
 		switch event.Type {
 		case agent.EventAgentStart:
 			cc.loadPromptFromDisk()

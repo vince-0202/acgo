@@ -31,9 +31,9 @@ func (mc *MemoryController) Name() string {
 	return "memory"
 }
 
-func (mc *MemoryController) Install(agent agent.AgentRuntime) (func(), error) {
+func (mc *MemoryController) Install(runtime agent.AgentRuntime) (func(), error) {
 	mc.loadWriter()
-	unsub := agent.Subscribe(func(event agent.Event, abort func()) {
+	unsub := runtime.Subscribe(func(event agent.Event, abort func()) {
 		if event.Type != agent.EventMessageEnd || event.Message == nil {
 			return
 		}

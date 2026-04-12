@@ -91,12 +91,12 @@ func (pc *PermissionController) Clone() *PermissionController {
 	return NewPermissionController(pc.Mode(), pc.Rules(), pc.GetConfirmHook())
 }
 
-func (pc *PermissionController) Install(agent agent.AgentRuntime) (func(), error) {
-	pc.agent = agent
+func (pc *PermissionController) Install(runtime agent.AgentRuntime) (func(), error) {
+	pc.agent = runtime
 	pc.syncPlanMode()
-	uninstall := agent.ToolManager().RegisterMiddleware(func(ctx context.Context, req agent.ToolExecutionRequest, next agent.ToolExecutionHandler) (communi.ToolCallResult, error) {
+	uninstall := runtime.ToolManager().RegisterMiddleware(func(ctx context.Context, req agent.ToolExecutionRequest, next agent.ToolExecutionHandler) (communi.ToolCallResult, error) {
 		toolArgs := strings.TrimSpace(string(req.Args))
-		workDir := agent.ContextManager().ToolWorkingDirectory()
+		workDir := runtime.ContextManager().ToolWorkingDirectory()
 		_, err := pc.Check(ctx, PermissionRequest{
 			Action:   "tool.execute",
 			Resource: "tool:" + req.Tool.Name(),
@@ -115,7 +115,7 @@ func (pc *PermissionController) Install(agent agent.AgentRuntime) (func(), error
 	})
 	return func() {
 		uninstall()
-		if pc.agent == agent {
+		if pc.agent == runtime {
 			pc.agent = nil
 		}
 	}, nil

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/vince-0202/acgo/pkg/agent"
 	bootstrapagent "github.com/vince-0202/acgo/pkg/bootstrap/agent"
+	bootstrapharness "github.com/vince-0202/acgo/pkg/bootstrap/harness"
 	"github.com/vince-0202/acgo/pkg/bootstrap/setting"
 	"github.com/vince-0202/acgo/pkg/config"
 )
@@ -28,13 +29,17 @@ func PromptOne() error {
 	}
 
 	//build agent with settings and other options
-	ag, _, err := bootstrapagent.BuildAgentRuntime(
+	ag, err := bootstrapagent.BuildAgent(
 		settings,
 		bootstrapagent.WithId("example-bootstrap-agent"),
 		bootstrapagent.WithDefaultTools(),
 	)
 	if err != nil {
 		return fmt.Errorf("build agent failed: %w", err)
+	}
+	h := bootstrapharness.BuildDefaultHarness()
+	if err := h.Attach(ag); err != nil {
+		return fmt.Errorf("attach harness failed: %w", err)
 	}
 
 	unsub := ag.Subscribe(func(e agent.Event, abort func()) {
