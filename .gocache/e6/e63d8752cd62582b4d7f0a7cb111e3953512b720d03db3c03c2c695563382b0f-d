@@ -1,7 +1,0 @@
-./builder.go
-./context.go
-./context_compact.go
-./harness.go
-./legacy_tool_adapter.go
-./permission.go
-./subagent_controller.go

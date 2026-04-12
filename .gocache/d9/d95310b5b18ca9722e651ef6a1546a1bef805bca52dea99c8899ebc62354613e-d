@@ -1,4 +1,0 @@
-./decoder.go
-./hcl.go
-./lex.go
-./parse.go
