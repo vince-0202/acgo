@@ -1,4 +1,4 @@
-package tui_new
+package tui
 
 import (
 	"context"
@@ -6,29 +6,19 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/vince-0202/acgo/pkg/agent_new"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/errors"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/session"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
-func (m *Model) waitForStreamEvent(ch chan streamEvent) tea.Cmd {
-	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return streamEvent{Done: true, Ch: ch}
-		}
-		return ev
-	}
-}
-
-func (m *Model) runAgentStream(prompt string) tea.Cmd {
+func (m *Model) startAgentStream(prompt string, emit func(streamEvent)) {
 	ch := make(chan streamEvent, 64)
 	var done atomic.Bool
 	go func() {
 		m.streamDone = &done
-		unsub := m.agent.Subscribe(func(event agent_new.Event, abort func()) {
+		unsub := m.agent.Subscribe(func(event agent.Event, abort func()) {
+			m.syncSubAgentSubscriptions(ch, &done)
 			m.handleAgentEvent(event, &done, ch, "")
 		})
 		defer unsub()
@@ -45,21 +35,27 @@ func (m *Model) runAgentStream(prompt string) tea.Cmd {
 		ch <- streamEvent{Done: true, Err: err, Ch: ch, SubID: ""}
 		close(ch)
 	}()
-	return m.waitForStreamEvent(ch)
+	go func() {
+		for ev := range ch {
+			if emit != nil {
+				emit(ev)
+			}
+		}
+	}()
 }
 
-func (m *Model) handleAgentEvent(event agent_new.Event, done *atomic.Bool, ch chan streamEvent, subID string) {
+func (m *Model) handleAgentEvent(event agent.Event, done *atomic.Bool, ch chan streamEvent, subID string) {
 	if done.Load() {
 		return
 	}
 	if subID == "" && m.session != nil && event.Message != nil {
 		switch event.Type {
-		case agent_new.EventMessageEnd, agent_new.EventToolExecutionEnd:
+		case agent.EventMessageEnd, agent.EventToolExecutionEnd:
 			_ = m.session.AppendMessage(*event.Message)
 		}
 	}
 	switch event.Type {
-	case agent_new.EventMessageUpdate:
+	case agent.EventMessageUpdate:
 		if event.LlmEvent == nil {
 			return
 		}
@@ -75,7 +71,7 @@ func (m *Model) handleAgentEvent(event agent_new.Event, done *atomic.Bool, ch ch
 			default:
 			}
 		}
-	case agent_new.EventMessageEnd:
+	case agent.EventMessageEnd:
 		if event.Message == nil || event.Message.Role != keys.AgentRoleAssistant {
 			return
 		}
@@ -88,7 +84,7 @@ func (m *Model) handleAgentEvent(event agent_new.Event, done *atomic.Bool, ch ch
 		case ch <- streamEvent{FinalThinking: finalThinking, FinalContent: finalContent, Ch: ch, SubID: subID}:
 		default:
 		}
-	case agent_new.EventTurnEnd:
+	case agent.EventTurnEnd:
 		if event.LlmEvent != nil && event.LlmEvent.Usage != nil {
 			usage := *event.LlmEvent.Usage
 			select {
@@ -96,7 +92,7 @@ func (m *Model) handleAgentEvent(event agent_new.Event, done *atomic.Bool, ch ch
 			default:
 			}
 		}
-	case agent_new.EventToolExecutionStart:
+	case agent.EventToolExecutionStart:
 		toolName := ""
 		if event.Tool != nil {
 			toolName = strings.TrimSpace(event.Tool.Name())
@@ -112,7 +108,7 @@ func (m *Model) handleAgentEvent(event agent_new.Event, done *atomic.Bool, ch ch
 		}, Ch: ch, SubID: subID}:
 		default:
 		}
-	case agent_new.EventToolExecutionEnd:
+	case agent.EventToolExecutionEnd:
 		toolName := ""
 		if event.Tool != nil {
 			toolName = strings.TrimSpace(event.Tool.Name())
@@ -164,7 +160,7 @@ func (m *Model) syncSubAgentSubscriptions(ch chan streamEvent, done *atomic.Bool
 		if !ok || child == nil {
 			continue
 		}
-		unsub := child.Subscribe(func(event agent_new.Event, abort func()) {
+		unsub := child.Subscribe(func(event agent.Event, abort func()) {
 			m.handleAgentEvent(event, done, ch, subID)
 		})
 		m.subAgentSubKeys[key] = unsub

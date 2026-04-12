@@ -3,8 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 	"os/exec"
 )
 
@@ -30,7 +30,7 @@ func (t *bashTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Command string `json:"command"`
 	}
@@ -44,7 +44,7 @@ func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-lc", params.Command)
-	if wd := harness.ToolWorkingDirFromContext(ctx); wd != "" {
+	if wd := agent.ToolWorkingDirFromContext(ctx); wd != "" {
 		cmd.Dir = wd
 	}
 	out, err := cmd.CombinedOutput()
@@ -55,6 +55,6 @@ func (t *bashTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 }
 
 // NewBashTool creates a new bash AgentTool.
-func NewBashTool() harness.Tool {
+func NewBashTool() agent.Tool {
 	return &bashTool{}
 }

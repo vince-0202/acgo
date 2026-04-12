@@ -3,8 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 	"os"
 )
 
@@ -30,7 +30,7 @@ func (t *readTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path string `json:"path"`
 	}
@@ -43,7 +43,7 @@ func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 			return communi.ErrorToolCallResult(toolCallID, err)
 		}
 	}
-	path := harness.ResolveToolPath(ctx, params.Path)
+	path := agent.ResolveToolPath(ctx, params.Path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
@@ -52,6 +52,6 @@ func (t *readTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 }
 
 // NewReadTool creates a new read AgentTool.
-func NewReadTool() harness.Tool {
+func NewReadTool() agent.Tool {
 	return &readTool{}
 }

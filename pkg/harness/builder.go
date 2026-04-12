@@ -1,16 +1,16 @@
-package harness_new
+package harness
 
 import (
-	"github.com/vince-0202/acgo/pkg/agent_new"
+	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 type BuildOptions struct {
-	Agent       agent_new.Options
+	Agent       agent.Options
 	Controllers []Controller
 }
 
-func Build(opts BuildOptions) (*agent_new.Agent, *Harness, error) {
-	agent := agent_new.New(opts.Agent)
+func Build(opts BuildOptions) (*agent.Agent, *Harness, error) {
+	agent := agent.New(opts.Agent)
 	harness := NewHarness(opts.Controllers...)
 	if err := harness.Attach(agent); err != nil {
 		return nil, nil, err

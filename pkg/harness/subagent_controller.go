@@ -1,15 +1,16 @@
-package harness_new
+package harness
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 
-	"github.com/vince-0202/acgo/pkg/agent_new"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
 )
 
@@ -18,7 +19,7 @@ const subAgentToolName = "sub_agent"
 type ChildControllerFactory func() Controller
 
 type ChildAgentBuilder interface {
-	BuildChild(ctx context.Context, parent agent_new.AgentRuntime, spec agent_new.SubAgentSpec) (*agent_new.Agent, error)
+	BuildChild(ctx context.Context, parent agent.AgentRuntime, spec agent.SubAgentSpec) (*agent.Agent, error)
 }
 
 type SubAgentControllerOptions struct {
@@ -29,8 +30,8 @@ type SubAgentControllerOptions struct {
 
 type SubAgentController struct {
 	opts           SubAgentControllerOptions
-	installedAgent agent_new.AgentRuntime
-	registeredTool agent_new.Tool
+	installedAgent agent.AgentRuntime
+	registeredTool agent.Tool
 }
 
 func NewSubAgentController(opts SubAgentControllerOptions) *SubAgentController {
@@ -44,13 +45,13 @@ func (c *SubAgentController) Name() string {
 	return "subagent"
 }
 
-func (c *SubAgentController) Install(agent agent_new.AgentRuntime) (func(), error) {
+func (c *SubAgentController) Install(agent agent.AgentRuntime) (func(), error) {
 	c.installedAgent = agent
 	builder := c.opts.Builder
 	if builder == nil {
 		builder = &defaultChildAgentBuilder{controllerFactories: c.opts.ChildControllerFactories}
 	}
-	agent.SubAgentManager().SetFactory(func(ctx context.Context, parent agent_new.AgentRuntime, spec agent_new.SubAgentSpec) (*agent_new.Agent, error) {
+	agent.SubAgentManager().SetFactory(func(ctx context.Context, parent agent.AgentRuntime, spec agent.SubAgentSpec) (*agent.Agent, error) {
 		return builder.BuildChild(ctx, parent, spec)
 	})
 
@@ -75,7 +76,7 @@ type defaultChildAgentBuilder struct {
 	controllerFactories []ChildControllerFactory
 }
 
-func (b *defaultChildAgentBuilder) BuildChild(ctx context.Context, parent agent_new.AgentRuntime, spec agent_new.SubAgentSpec) (*agent_new.Agent, error) {
+func (b *defaultChildAgentBuilder) BuildChild(ctx context.Context, parent agent.AgentRuntime, spec agent.SubAgentSpec) (*agent.Agent, error) {
 	spec.ID = normalizeSubAgentID(spec.ID)
 	if spec.ID == "" {
 		return nil, fmt.Errorf("sub-agent id is required")
@@ -83,13 +84,13 @@ func (b *defaultChildAgentBuilder) BuildChild(ctx context.Context, parent agent_
 
 	childWorkDir := filepath.Join(parent.ContextManager().WorkDir(), "subagents", spec.ID)
 	childTools := cloneChildTools(parent.ToolManager().RegisteredTools())
-	child := agent_new.New(agent_new.Options{
+	child := agent.New(agent.Options{
 		ID:       parent.ID() + "-sub-" + spec.ID,
 		WorkDir:  childWorkDir,
 		Model:    parent.Model(),
 		Provider: parent.Provider(),
 		Tools:    childTools,
-		InitialState: agent_new.State{
+		InitialState: agent.State{
 			WorkDir:       childWorkDir,
 			ThinkingLevel: parent.State().ThinkingLevel,
 		},
@@ -136,11 +137,11 @@ func (b *defaultChildAgentBuilder) BuildChild(ctx context.Context, parent agent_
 	return child, nil
 }
 
-func cloneChildTools(tools []agent_new.Tool) []agent_new.Tool {
+func cloneChildTools(tools []agent.Tool) []agent.Tool {
 	if len(tools) == 0 {
 		return nil
 	}
-	out := make([]agent_new.Tool, 0, len(tools))
+	out := make([]agent.Tool, 0, len(tools))
 	for _, tool := range tools {
 		if tool == nil || tool.Name() == subAgentToolName {
 			continue
@@ -151,10 +152,10 @@ func cloneChildTools(tools []agent_new.Tool) []agent_new.Tool {
 }
 
 type subAgentTool struct {
-	rt agent_new.SubAgentRuntime
+	rt agent.SubAgentRuntime
 }
 
-func newSubAgentTool(rt agent_new.SubAgentRuntime) agent_new.Tool {
+func newSubAgentTool(rt agent.SubAgentRuntime) agent.Tool {
 	return &subAgentTool{rt: rt}
 }
 
@@ -176,10 +177,38 @@ func (t *subAgentTool) JSONSchema() map[string]any {
 		"properties": map[string]any{
 			"action": map[string]any{
 				"type": "string",
-				"enum": []string{"create", "task", "batch_task", "list", "remove"},
+				"enum": []string{"create", "task", "batch_task", "list", "remove", "dispatch", "message_send", "message_inbox", "message_ack"},
 			},
 			"sub_id": map[string]any{"type": "string"},
 			"prompt": map[string]any{"type": "string"},
+			"auto_dispatch": map[string]any{
+				"type":        "boolean",
+				"description": "When action=task and auto_dispatch=true, dispatcher selects target sub-agent.",
+			},
+			"intent": map[string]any{
+				"type":        "string",
+				"description": "Semantic task intent used by dispatch and message routing.",
+			},
+			"constraints": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+			"preferred_sub_ids": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+			"from_sub_id": map[string]any{"type": "string"},
+			"to_sub_id":   map[string]any{"type": "string"},
+			"payload":     map[string]any{"type": "string"},
+			"correlation_id": map[string]any{
+				"type": "string",
+			},
+			"message_id": map[string]any{
+				"type": "string",
+			},
+			"limit": map[string]any{
+				"type": "integer",
+			},
 			"tasks": map[string]any{
 				"type": "array",
 				"items": map[string]any{
@@ -206,15 +235,25 @@ func (t *subAgentTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *subAgentTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent_new.ToolUpdateFunc) communi.ToolCallResult {
+func (t *subAgentTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	if t == nil || t.rt == nil {
 		return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("sub-agent runtime not configured"))
 	}
 	var params struct {
-		Action  string `json:"action"`
-		SubID   string `json:"sub_id"`
-		Prompt  string `json:"prompt"`
-		Profile struct {
+		Action         string   `json:"action"`
+		SubID          string   `json:"sub_id"`
+		Prompt         string   `json:"prompt"`
+		AutoDispatch   bool     `json:"auto_dispatch"`
+		Intent         string   `json:"intent"`
+		Constraints    []string `json:"constraints"`
+		PreferredSubID []string `json:"preferred_sub_ids"`
+		FromSubID      string   `json:"from_sub_id"`
+		ToSubID        string   `json:"to_sub_id"`
+		Payload        string   `json:"payload"`
+		CorrelationID  string   `json:"correlation_id"`
+		MessageID      string   `json:"message_id"`
+		Limit          int      `json:"limit"`
+		Profile        struct {
 			Role         string   `json:"role"`
 			RolePrompt   string   `json:"role_prompt"`
 			Capabilities []string `json:"capabilities"`
@@ -232,7 +271,7 @@ func (t *subAgentTool) Execute(ctx context.Context, toolCallID string, args json
 
 	switch strings.TrimSpace(strings.ToLower(params.Action)) {
 	case "create":
-		id, err := t.rt.Create(ctx, agent_new.SubAgentSpec{
+		id, err := t.rt.Create(ctx, agent.SubAgentSpec{
 			ID:           params.SubID,
 			Role:         strings.TrimSpace(params.Profile.Role),
 			RolePrompt:   strings.TrimSpace(params.Profile.RolePrompt),
@@ -243,9 +282,25 @@ func (t *subAgentTool) Execute(ctx context.Context, toolCallID string, args json
 		if err != nil {
 			return communi.ErrorToolCallResult(toolCallID, err)
 		}
-		return communi.NewToolCallResult(toolCallID, "created sub-agent "+id)
+		if child, ok := t.rt.Get(id); ok && child != nil {
+			return communi.NewToolCallResult(toolCallID, fmt.Sprintf("created sub-agent: %s (agent_id: %s)", id, child.ID()))
+		}
+		return communi.NewToolCallResult(toolCallID, "created sub-agent: "+id)
 	case "task":
-		out, err := t.rt.Run(ctx, params.SubID, params.Prompt)
+		target := strings.TrimSpace(params.SubID)
+		if params.AutoDispatch {
+			decision, err := t.rt.DispatchTask(ctx, agent.DispatchRequest{
+				Task:            params.Prompt,
+				Intent:          params.Intent,
+				Constraints:     params.Constraints,
+				PreferredSubIDs: params.PreferredSubID,
+			})
+			if err != nil {
+				return communi.ErrorToolCallResult(toolCallID, err)
+			}
+			target = decision.Target
+		}
+		out, err := t.rt.Run(ctx, target, params.Prompt)
 		if err != nil {
 			return communi.ErrorToolCallResult(toolCallID, err)
 		}
@@ -311,6 +366,57 @@ func (t *subAgentTool) Execute(ctx context.Context, toolCallID string, args json
 			return communi.ErrorToolCallResult(toolCallID, err)
 		}
 		return communi.NewToolCallResult(toolCallID, "removed sub-agent "+strings.TrimSpace(params.SubID))
+	case "dispatch":
+		decision, err := t.rt.DispatchTask(ctx, agent.DispatchRequest{
+			Task:            params.Prompt,
+			Intent:          params.Intent,
+			Constraints:     params.Constraints,
+			PreferredSubIDs: params.PreferredSubID,
+		})
+		if err != nil {
+			return communi.ErrorToolCallResult(toolCallID, err)
+		}
+		body, _ := json.MarshalIndent(decision, "", "  ")
+		return communi.NewToolCallResult(toolCallID, string(body))
+	case "message_send":
+		msg, err := t.rt.SendMessage(params.FromSubID, params.ToSubID, params.Intent, params.Payload, params.CorrelationID, nil)
+		if err != nil {
+			var msgErr *agent.SubAgentMessageError
+			if errors.As(err, &msgErr) && msgErr != nil {
+				body, _ := json.MarshalIndent(msgErr, "", "  ")
+				return communi.ToolCallResult{
+					ToolCallID: toolCallID,
+					Content:    []*communi.ContentBlock{communi.NewTextContentBlock(string(body))},
+					Error:      err,
+					Metadata: map[string]any{
+						"type":        "sub_agent_message_error",
+						"code":        msgErr.Code,
+						"reason":      msgErr.Reason,
+						"from_sub_id": msgErr.FromSubID,
+						"to_sub_id":   msgErr.ToSubID,
+						"intent":      msgErr.Intent,
+					},
+				}
+			}
+			return communi.ErrorToolCallResult(toolCallID, err)
+		}
+		body, _ := json.MarshalIndent(msg, "", "  ")
+		return communi.NewToolCallResult(toolCallID, string(body))
+	case "message_inbox":
+		limit := params.Limit
+		if limit <= 0 {
+			limit = 20
+		}
+		msgs := t.rt.PullInbox(params.SubID, limit, params.CorrelationID)
+		body, _ := json.MarshalIndent(msgs, "", "  ")
+		return communi.NewToolCallResult(toolCallID, string(body))
+	case "message_ack":
+		msg, err := t.rt.AckMessage(params.MessageID)
+		if err != nil {
+			return communi.ErrorToolCallResult(toolCallID, err)
+		}
+		body, _ := json.MarshalIndent(msg, "", "  ")
+		return communi.NewToolCallResult(toolCallID, string(body))
 	default:
 		return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("unsupported action %q", params.Action))
 	}
@@ -349,7 +455,7 @@ func subAgentDefaultBoundaryContract() string {
 		"- Escalate conflicts and unclear ownership to the coordinator instead of guessing."
 }
 
-func subAgentRolePrompt(profile agent_new.SubAgentSpec) string {
+func subAgentRolePrompt(profile agent.SubAgentSpec) string {
 	if strings.TrimSpace(profile.Role) == "" &&
 		strings.TrimSpace(profile.RolePrompt) == "" &&
 		len(profile.Capabilities) == 0 &&

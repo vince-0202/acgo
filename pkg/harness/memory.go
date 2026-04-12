@@ -5,21 +5,19 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/memory"
 )
 
-// MemoryWriter persists user–assistant dialogue for long-term recall.
 type MemoryWriter interface {
 	WriteDialogue(ctx context.Context, sessionID string, userText string, assistantText string) error
 }
 
-// MemoryController pairs per-turn user/assistant messages and writes them via MemoryWriter.
-// Load resolves a default writer when none was provided (see memory.DefaultManager).
 type MemoryController struct {
 	writer  MemoryWriter
 	mu      sync.Mutex
-	pending map[string]string // turnID -> user text
+	pending map[string]string
 }
 
 func NewMemoryController(w MemoryWriter) *MemoryController {
@@ -29,43 +27,63 @@ func NewMemoryController(w MemoryWriter) *MemoryController {
 	}
 }
 
-// Load implements Controller. When no writer was injected, tries memory.DefaultManager().
-func (c *MemoryController) Load() {
-	if c == nil {
-		return
-	}
-	if c.writer != nil {
+func (mc *MemoryController) Name() string {
+	return "memory"
+}
+
+func (mc *MemoryController) Install(agent agent.AgentRuntime) (func(), error) {
+	mc.loadWriter()
+	unsub := agent.Subscribe(func(event agent.Event, abort func()) {
+		if event.Type != agent.EventMessageEnd || event.Message == nil {
+			return
+		}
+		turnID := strings.TrimSpace(event.TurnID)
+		if turnID == "" {
+			return
+		}
+		text := strings.TrimSpace(event.Message.ContentBlocksToText())
+		switch event.Message.Role {
+		case keys.AgentRoleUser:
+			mc.rememberUser(turnID, text)
+		case keys.AgentRoleAssistant:
+			mc.writeDialogue(turnID, text)
+		}
+	})
+	return func() {
+		unsub()
+	}, nil
+}
+
+func (mc *MemoryController) loadWriter() {
+	if mc == nil || mc.writer != nil {
 		return
 	}
 	mgr, err := memory.DefaultManager()
 	if err != nil {
 		return
 	}
-	c.writer = mgr
+	mc.writer = mgr
 }
 
-func (c *MemoryController) RecordWithMetaData(ctx context.Context, msg *communi.Message, metaData map[string]any) {
-	if c == nil || msg == nil || metaData == nil {
+func (mc *MemoryController) rememberUser(turnID, text string) {
+	if mc == nil {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.writer == nil {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	mc.pending[turnID] = text
+}
+
+func (mc *MemoryController) writeDialogue(turnID, assistantText string) {
+	if mc == nil {
 		return
 	}
-	turnID, _ := metaData["turnID"].(string)
-	if turnID == "" {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	if mc.writer == nil {
 		return
 	}
-	typ, _ := metaData["type"].(string)
-	text := strings.TrimSpace(msg.ContentBlocksToText())
-	switch typ {
-	case "userAsk":
-		c.pending[turnID] = text
-	case "assistant":
-		userText := c.pending[turnID]
-		delete(c.pending, turnID)
-		sid, _ := memory.SessionIDFromContext(ctx)
-		_ = c.writer.WriteDialogue(ctx, sid, userText, text)
-	}
+	userText := mc.pending[turnID]
+	delete(mc.pending, turnID)
+	_ = mc.writer.WriteDialogue(context.Background(), "", userText, assistantText)
 }

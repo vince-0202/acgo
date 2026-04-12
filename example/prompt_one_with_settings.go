@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/vince-0202/acgo/pkg/bootstrap/agent"
+	"github.com/vince-0202/acgo/pkg/agent"
+	bootstrapagent "github.com/vince-0202/acgo/pkg/bootstrap/agent"
 	"github.com/vince-0202/acgo/pkg/bootstrap/setting"
-	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/config"
 )
 
@@ -28,19 +28,22 @@ func PromptOne() error {
 	}
 
 	//build agent with settings and other options
-	ag := agent.BuildAgent(
+	ag, _, err := bootstrapagent.BuildAgentRuntime(
 		settings,
-		agent.WithId("example-bootstrap-agent"),
-		agent.WithDefaultTools(),
+		bootstrapagent.WithId("example-bootstrap-agent"),
+		bootstrapagent.WithDefaultTools(),
 	)
-	if ag == nil {
-		return fmt.Errorf("build agent failed")
+	if err != nil {
+		return fmt.Errorf("build agent failed: %w", err)
 	}
 
-	unsub := ag.Subscribe(func(e communi.AgentEvent) {
+	unsub := ag.Subscribe(func(e agent.Event, abort func()) {
 		switch e.Type {
-		case communi.EventMessageEnd:
-			fmt.Printf("%s: %s\n", e.Message.Role, e.Message.Content)
+		case agent.EventMessageEnd:
+			if e.Message == nil {
+				return
+			}
+			fmt.Printf("%s: %s\n", e.Message.Role, e.Message.ContentBlocksToText())
 		}
 	})
 	defer unsub()

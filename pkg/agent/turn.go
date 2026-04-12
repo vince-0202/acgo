@@ -1,4 +1,4 @@
-package agent_new
+package agent
 
 import (
 	"context"
@@ -8,9 +8,10 @@ import (
 	"github.com/vince-0202/acgo/pkg/utils"
 )
 
+const planModeInstructionPrompt = "Plan mode is active. Your final response must be a concrete coding plan only (steps, scope, and verification), not code changes. Do not call task-editing tools such as write/edit, and do not perform mutating operations."
+
 type turnManager struct {
-	roundNumber   int
-	lastTurnError *errors.AgentError
+	roundNumber int
 }
 
 func (tm *turnManager) reset() {
@@ -18,10 +19,9 @@ func (tm *turnManager) reset() {
 		return
 	}
 	tm.roundNumber = 0
-	tm.lastTurnError = nil
 }
 
-func (tm *turnManager) startAgentTurn(ctx context.Context, agent *Agent, initialMsg *communi.Message) {
+func (tm *turnManager) startAgentTurn(ctx context.Context, agent *Agent, initialMsg *communi.Message) *errors.AgentError {
 	for {
 		turnMsg := initialMsg
 		if !tm.IsFirstTurn() {
@@ -36,13 +36,12 @@ func (tm *turnManager) startAgentTurn(ctx context.Context, agent *Agent, initial
 			WithEventAgent(agent),
 			WithEventTurnId(lastTurn.id),
 		))
-		lastTurn.run(ctx, turnMsg)
-		if lastTurn.err != nil {
-			tm.lastTurnError = lastTurn.err
-			break
+		if agentError := lastTurn.run(ctx, turnMsg); agentError != nil {
+			return agentError
 		}
 		tm.roundNumber++
 	}
+	return nil
 }
 
 func (tm *turnManager) IsFirstTurn() bool {
@@ -59,7 +58,6 @@ func newTurn(agent *Agent) *turn {
 type turn struct {
 	id    string
 	agent *Agent
-	err   *errors.AgentError
 }
 
 func (t *turn) run(ctx context.Context, turnMsg *communi.Message) *errors.AgentError {
@@ -69,13 +67,13 @@ func (t *turn) run(ctx context.Context, turnMsg *communi.Message) *errors.AgentE
 
 	t.agent.emitUserMessage(t.id, turnMsg)
 	if lastErr := t.runLLMTurnsUntilDone(ctx); lastErr != nil {
-		return errors.WrapError(lastErr)
+		return lastErr
 	}
 	return nil
 }
 
 // runLLMTurnsUntilDone runs stream turns and tool execution until no more tool calls or an error.
-func (t *turn) runLLMTurnsUntilDone(ctx context.Context) error {
+func (t *turn) runLLMTurnsUntilDone(ctx context.Context) *errors.AgentError {
 	for {
 		streamErr, hasToolCalls := t.runOneStream(ctx)
 		if streamErr != nil {
@@ -90,7 +88,7 @@ func (t *turn) runLLMTurnsUntilDone(ctx context.Context) error {
 
 // runOneStream performs one LLM stream call: build context, stream, process events, append assistant, emit done.
 // Returns (error if any, whether there are pending tool calls to execute).
-func (t *turn) runOneStream(ctx context.Context) (err error, hasToolCalls bool) {
+func (t *turn) runOneStream(ctx context.Context) (err *errors.AgentError, hasToolCalls bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	t.agent.state.IsStreaming = true
 	t.agent.currentCancel = cancel
@@ -106,6 +104,10 @@ func (t *turn) runOneStream(ctx context.Context) (err error, hasToolCalls bool) 
 		ReasoningEffort: t.agent.state.ThinkingLevel,
 	}
 	llmMessages := t.agent.context.Messages
+	if t.agent.planMode {
+		llmMessages = append([]communi.Message(nil), llmMessages...)
+		llmMessages = append(llmMessages, communi.NewSystemMessageWithoutId(planModeInstructionPrompt))
+	}
 	t.agent.emit(NewEvent(
 		WithEventType(EventBeforeLLMCall),
 		WithEventAgent(t.agent),
@@ -114,15 +116,15 @@ func (t *turn) runOneStream(ctx context.Context) (err error, hasToolCalls bool) 
 
 	events, streamErr := t.agent.provider.Stream(ctx, t.agent.model, llmMessages, opts)
 	if streamErr != nil {
-		t.err = errors.WrapError(streamErr)
-		t.agent.state.Error = t.err
+		agentErr := errors.WrapError(streamErr)
+		t.agent.state.Error = agentErr
 		t.agent.emit(NewEvent(
 			WithEventType(EventTurnEnd),
 			WithEventAgent(t.agent),
 			WithEventTurnId(t.id),
-			WithEventError(t.err),
+			WithEventError(agentErr),
 		))
-		return streamErr, false
+		return agentErr, false
 	}
 
 	assistant := communi.NewAssistantMessage(t.id, "")
@@ -157,7 +159,6 @@ func (t *turn) runOneStream(ctx context.Context) (err error, hasToolCalls bool) 
 		WithEventTurnId(t.id),
 		WithEventMessage(&assistant),
 		WithEventLLMEvent(lastDone),
-		WithEventError(t.err),
 	))
 	t.agent.emit(NewEvent(
 		WithEventType(EventMessageEnd),
@@ -172,13 +173,7 @@ func (t *turn) runOneStream(ctx context.Context) (err error, hasToolCalls bool) 
 		WithEventTurnId(t.id),
 		WithEventMessage(&assistant),
 		WithEventLLMEvent(lastDone),
-		WithEventError(t.err),
 	))
-
-	if t.err != nil {
-		t.agent.state.Error = t.err
-		return t.err, false
-	}
 	return nil, len(pendingToolCalls) > 0
 }
 
@@ -227,10 +222,6 @@ func (t *turn) processStreamEvents(events <-chan communi.LLMEvent, assistant *co
 			if ev.ToolCall != nil {
 				t.agent.toolManager.UpsertPendingToolCall(*ev.ToolCall)
 			}
-		case communi.EventError:
-			t.err = errors.WrapError(ev.Error)
-			t.agent.state.Error = t.err
-			assistant.IsError = true
 		case communi.EventDone:
 			evCopy := ev
 			lastDone = &evCopy

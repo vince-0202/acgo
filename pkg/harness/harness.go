@@ -1,14 +1,14 @@
-package harness_new
+package harness
 
 import (
 	"fmt"
 
-	"github.com/vince-0202/acgo/pkg/agent_new"
+	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 type Controller interface {
 	Name() string
-	Install(agent agent_new.AgentRuntime) (func(), error)
+	Install(agent agent.AgentRuntime) (func(), error)
 }
 
 type Harness struct {
@@ -25,7 +25,7 @@ func NewHarness(controllers ...Controller) *Harness {
 	return res
 }
 
-func (h *Harness) Attach(agent agent_new.AgentRuntime) error {
+func (h *Harness) Attach(agent agent.AgentRuntime) error {
 	if h == nil {
 		return nil
 	}

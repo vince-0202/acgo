@@ -1,4 +1,4 @@
-package agent_new
+package agent
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
 	"github.com/xeipuuv/gojsonschema"
+	"path/filepath"
 	"strings"
 )
 
@@ -53,6 +54,10 @@ type ToolExecutionRequest struct {
 type ToolExecutionHandler func(ctx context.Context, req ToolExecutionRequest) (communi.ToolCallResult, error)
 
 type ToolExecutionMiddleware func(ctx context.Context, req ToolExecutionRequest, next ToolExecutionHandler) (communi.ToolCallResult, error)
+
+type ToolDispatcher interface {
+	ExecuteByName(ctx context.Context, callID, toolName string, args json.RawMessage, opts ExecuteToolOptions) (communi.ToolCallResult, error)
+}
 
 type toolsManager struct {
 	tools            map[string]Tool
@@ -151,7 +156,7 @@ func (tm *toolsManager) Execute(ctx context.Context, turn *turn) {
 	}
 	calls := tm.pendingToolCalls
 	tm.pendingToolCalls = make([]communi.ToolCallRequest, 0)
-	ctx = context.WithValue(ctx, toolExecutorContextKey{}, tm)
+	ctx = ContextWithToolDispatcher(ctx, tm)
 	options := ExecuteToolOptions{
 		AppendTranscript: true,
 		EmitEvents:       true,
@@ -177,6 +182,28 @@ func (tm *toolsManager) Execute(ctx context.Context, turn *turn) {
 	}
 }
 
+func (tm *toolsManager) ExecuteByName(ctx context.Context, callID, toolName string, args json.RawMessage, opts ExecuteToolOptions) (communi.ToolCallResult, error) {
+	if tm == nil {
+		res := communi.ErrorToolCallResult(callID, fmt.Errorf("tool manager is nil"))
+		return res, res.Error
+	}
+	tool, ok := tm.FindTool(toolName)
+	if !ok {
+		res := communi.ErrorToolCallResult(callID, ErrUnknownProvider(toolName))
+		return res, res.Error
+	}
+	executor := ToolExecutor{
+		tool: tool,
+		caller: communi.ToolCallRequest{
+			ID:        callID,
+			Name:      toolName,
+			Arguments: args,
+		},
+		opts: opts,
+	}
+	return executor.ExecuteByName(ctx, opts)
+}
+
 type ToolExecutor struct {
 	turn   *turn
 	agent  *Agent
@@ -186,6 +213,14 @@ type ToolExecutor struct {
 }
 
 type toolExecutorContextKey struct{}
+
+// ContextWithToolDispatcher attaches a dispatcher for nested tool execution.
+func ContextWithToolDispatcher(ctx context.Context, dispatcher ToolDispatcher) context.Context {
+	if ctx == nil || dispatcher == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, toolExecutorContextKey{}, dispatcher)
+}
 
 // ExecuteByName executes a single tool call by tool name and arguments.
 // It reuses argument normalization/coercion/validation and permission checks.
@@ -217,30 +252,37 @@ func (te *ToolExecutor) ExecuteByName(ctx context.Context, opts ExecuteToolOptio
 
 	req := ToolExecutionRequest{
 		Agent:    te.agent,
-		TurnID:   te.turn.id,
+		TurnID:   "",
 		Tool:     te.tool,
 		ToolCall: toolCall,
 		Args:     toolArgs,
+	}
+	if te.turn != nil {
+		req.TurnID = te.turn.id
 	}
 	if te.agent != nil {
 		te.agent.emit(NewEvent(
 			WithEventType(EventBeforeToolExecution),
 			WithEventAgent(te.agent),
-			WithEventTurnId(te.turn.id),
+			WithEventTurnId(req.TurnID),
 			WithEventTooCallId(te.caller.ID),
 			WithEventTool(te.tool),
 		))
 	}
-	executorManager := te.agent.toolManager
-	if executorManager == nil {
-		res := communi.ErrorToolCallResult(te.caller.ID, fmt.Errorf("tool manager is nil"))
-		finalizeToolExecution(te.agent, te.tool, toolCall, toolArgs, res, opts)
-		return res, res.Error
-	}
-	res, err := executorManager.executeWithMiddleware(ctx, req, func(ctx context.Context, req ToolExecutionRequest) (communi.ToolCallResult, error) {
+	executeCore := func(ctx context.Context, req ToolExecutionRequest) (communi.ToolCallResult, error) {
 		result := te.tool.Execute(ctx, te.caller.ID, toolArgs, opts.Update)
 		return result, result.Error
-	})
+	}
+
+	var (
+		res communi.ToolCallResult
+		err error
+	)
+	if te.agent != nil && te.agent.toolManager != nil {
+		res, err = te.agent.toolManager.executeWithMiddleware(ctx, req, executeCore)
+	} else {
+		res, err = executeCore(ctx, req)
+	}
 	finalizeToolExecution(te.agent, te.tool, toolCall, toolArgs, res, opts)
 	return res, err
 }
@@ -440,6 +482,7 @@ func toolResultToMessage(call communi.ToolCallRequest, args json.RawMessage, res
 		toolMsg := communi.NewToolCallErrorMessage(call.ID, result.Error)
 		toolMsg.ToolCall.Name = call.Name
 		toolMsg.ToolCall.Arguments = args
+		toolMsg.Metadata = result.Metadata
 		return toolMsg, result.Error
 	}
 	toolMsg := communi.Message{
@@ -455,4 +498,52 @@ func toolResultToMessage(call communi.ToolCallRequest, args json.RawMessage, res
 		Metadata: result.Metadata,
 	}
 	return toolMsg, nil
+}
+
+type toolWorkingDirKey struct{}
+
+// ContextWithToolWorkingDir attaches the directory tools should use as cwd / relative-path base.
+func ContextWithToolWorkingDir(ctx context.Context, dir string) context.Context {
+	if ctx == nil || strings.TrimSpace(dir) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, toolWorkingDirKey{}, filepath.Clean(dir))
+}
+
+// ToolWorkingDirFromContext returns the tool working directory, or "" if unset.
+func ToolWorkingDirFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v := ctx.Value(toolWorkingDirKey{})
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// ResolveToolPath resolves a path for file tools: absolute paths stay as-is; relative paths join the tool working directory when set.
+func ResolveToolPath(ctx context.Context, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	wd := ToolWorkingDirFromContext(ctx)
+	if wd == "" {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(filepath.Join(wd, path))
+}
+
+// ToolExecutorFromContext returns a dispatcher injected by the active tool execution pipeline.
+func ToolExecutorFromContext(ctx context.Context) (ToolDispatcher, bool) {
+	v := ctx.Value(toolExecutorContextKey{})
+	if v == nil {
+		return nil, false
+	}
+	te, ok := v.(ToolDispatcher)
+	return te, ok
 }

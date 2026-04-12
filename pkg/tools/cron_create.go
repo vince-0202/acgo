@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"strings"
 
 	"github.com/vince-0202/acgo/pkg/runtime"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 type cronCreateTool struct{}
@@ -50,7 +50,7 @@ func (t *cronCreateTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *cronCreateTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *cronCreateTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		AgentID         string  `json:"agent_id"`
 		Prompt          string  `json:"prompt"`
@@ -72,7 +72,7 @@ func (t *cronCreateTool) Execute(ctx context.Context, toolCallID string, args js
 		if len(agents) == 0 {
 			return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("no registered agent available for cron task"))
 		}
-		agentID = agents[0].Id()
+		agentID = agents[0].ID()
 	}
 	if _, ok := runtime.GetAgent(agentID); !ok {
 		return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("agent not found: %s", agentID))
@@ -90,6 +90,6 @@ func (t *cronCreateTool) Execute(ctx context.Context, toolCallID string, args js
 	))
 }
 
-func NewCronCreateTool() harness.Tool {
+func NewCronCreateTool() agent.Tool {
 	return &cronCreateTool{}
 }

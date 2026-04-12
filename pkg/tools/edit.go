@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 	"os"
 )
 
@@ -39,7 +39,7 @@ func (t *editTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *editTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *editTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path         string `json:"path"`
 		Content      string `json:"content"`
@@ -48,7 +48,7 @@ func (t *editTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	if err := json.Unmarshal(args, &params); err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
-	path := harness.ResolveToolPath(ctx, params.Path)
+	path := agent.ResolveToolPath(ctx, params.Path)
 	if err := os.WriteFile(path, []byte(params.Content), 0o644); err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
@@ -56,6 +56,6 @@ func (t *editTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 }
 
 // NewEditTool creates a new edit AgentTool.
-func NewEditTool() harness.Tool {
+func NewEditTool() agent.Tool {
 	return &editTool{}
 }

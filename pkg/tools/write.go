@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 	"os"
 )
 
@@ -35,7 +35,7 @@ func (t *writeTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
@@ -43,7 +43,7 @@ func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.Ra
 	if err := json.Unmarshal(args, &params); err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
-	path := harness.ResolveToolPath(ctx, params.Path)
+	path := agent.ResolveToolPath(ctx, params.Path)
 	if err := os.WriteFile(path, []byte(params.Content), 0o644); err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
@@ -54,6 +54,6 @@ func (t *writeTool) Execute(ctx context.Context, toolCallID string, args json.Ra
 }
 
 // NewWriteTool creates a new write AgentTool.
-func NewWriteTool() harness.Tool {
+func NewWriteTool() agent.Tool {
 	return &writeTool{}
 }

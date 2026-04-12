@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 type DispatchRequest struct {
@@ -26,60 +25,60 @@ type DispatchDecision struct {
 }
 
 type dispatchCandidate struct {
-	subID   string
-	profile harness.SubAgentProfile
+	subID string
+	spec  SubAgentSpec
 }
 
-func (c *SubAgentController) DispatchTask(ctx context.Context, req DispatchRequest) (DispatchDecision, error) {
+func (m *SubAgentManager) DispatchTask(ctx context.Context, req DispatchRequest) (DispatchDecision, error) {
 	task := strings.TrimSpace(req.Task)
 	intent := strings.TrimSpace(strings.ToLower(req.Intent))
 	if task == "" {
 		return DispatchDecision{}, fmt.Errorf("task is empty")
 	}
 
-	c.mu.Lock()
-	all := make([]dispatchCandidate, 0, len(c.children))
-	for subID := range c.children {
+	m.mu.Lock()
+	all := make([]dispatchCandidate, 0, len(m.children))
+	for subID := range m.children {
 		all = append(all, dispatchCandidate{
-			subID:   subID,
-			profile: c.profiles[subID],
+			subID: subID,
+			spec:  m.specs[subID],
 		})
 	}
-	c.mu.Unlock()
+	m.mu.Unlock()
 	if len(all) == 0 {
 		return DispatchDecision{}, fmt.Errorf("no sub-agents available")
 	}
 
 	preferred := make(map[string]bool)
-	for _, p := range req.PreferredSubIDs {
-		if k := sanitizeSubAgentKey(p); k != "" {
-			preferred[k] = true
+	for _, item := range req.PreferredSubIDs {
+		if key := normalizeSubAgentID(item); key != "" {
+			preferred[key] = true
 		}
 	}
 
 	filtered := make([]dispatchCandidate, 0, len(all))
-	for _, c := range all {
-		if len(preferred) > 0 && !preferred[c.subID] {
+	for _, candidate := range all {
+		if len(preferred) > 0 && !preferred[candidate.subID] {
 			continue
 		}
-		filtered = append(filtered, c)
+		filtered = append(filtered, candidate)
 	}
 	if len(filtered) == 0 {
 		filtered = all
 	}
 
 	ruleMatched := make([]dispatchCandidate, 0, len(filtered))
-	for _, c := range filtered {
+	for _, candidate := range filtered {
 		if intent == "" {
-			ruleMatched = append(ruleMatched, c)
+			ruleMatched = append(ruleMatched, candidate)
 			continue
 		}
-		if capabilityMatch(intent, c.profile.Capabilities) {
-			ruleMatched = append(ruleMatched, c)
+		if capabilityMatch(intent, candidate.spec.Capabilities) {
+			ruleMatched = append(ruleMatched, candidate)
 			continue
 		}
-		if keywordMatch(task, c.profile.Capabilities) {
-			ruleMatched = append(ruleMatched, c)
+		if keywordMatch(task, candidate.spec.Capabilities) {
+			ruleMatched = append(ruleMatched, candidate)
 		}
 	}
 	if len(ruleMatched) == 0 {
@@ -93,19 +92,18 @@ func (c *SubAgentController) DispatchTask(ctx context.Context, req DispatchReque
 		}, nil
 	}
 
-	decision, err := c.llmDispatchChoice(ctx, task, intent, req.Constraints, ruleMatched)
+	decision, err := m.llmDispatchChoice(ctx, task, intent, req.Constraints, ruleMatched)
 	if err == nil && decision.Target != "" {
 		return decision, nil
 	}
 
-	// Fallback: deterministic pick by capability token overlap and subID.
 	sort.SliceStable(ruleMatched, func(i, j int) bool {
-		si := capabilityOverlapScore(task, intent, ruleMatched[i].profile.Capabilities)
-		sj := capabilityOverlapScore(task, intent, ruleMatched[j].profile.Capabilities)
-		if si == sj {
+		left := capabilityOverlapScore(task, intent, ruleMatched[i].spec.Capabilities)
+		right := capabilityOverlapScore(task, intent, ruleMatched[j].spec.Capabilities)
+		if left == right {
 			return ruleMatched[i].subID < ruleMatched[j].subID
 		}
-		return si > sj
+		return left > right
 	})
 	alts := make([]string, 0, len(ruleMatched)-1)
 	for i := 1; i < len(ruleMatched); i++ {
@@ -121,8 +119,8 @@ func (c *SubAgentController) DispatchTask(ctx context.Context, req DispatchReque
 
 func capabilityMatch(intent string, caps []string) bool {
 	intent = strings.TrimSpace(strings.ToLower(intent))
-	for _, c := range caps {
-		if strings.ToLower(strings.TrimSpace(c)) == intent {
+	for _, item := range caps {
+		if strings.ToLower(strings.TrimSpace(item)) == intent {
 			return true
 		}
 	}
@@ -131,11 +129,11 @@ func capabilityMatch(intent string, caps []string) bool {
 
 func keywordMatch(task string, caps []string) bool {
 	task = strings.ToLower(strings.TrimSpace(task))
-	for _, c := range caps {
-		if c == "" {
+	for _, item := range caps {
+		if item == "" {
 			continue
 		}
-		if strings.Contains(task, strings.ToLower(strings.TrimSpace(c))) {
+		if strings.Contains(task, strings.ToLower(strings.TrimSpace(item))) {
 			return true
 		}
 	}
@@ -147,22 +145,23 @@ func capabilityOverlapScore(task, intent string, caps []string) int {
 	if capabilityMatch(intent, caps) {
 		score += 3
 	}
-	for _, c := range caps {
-		c = strings.TrimSpace(strings.ToLower(c))
-		if c == "" {
+	for _, item := range caps {
+		item = strings.TrimSpace(strings.ToLower(item))
+		if item == "" {
 			continue
 		}
-		if strings.Contains(strings.ToLower(task), c) {
+		if strings.Contains(strings.ToLower(task), item) {
 			score++
 		}
 	}
 	return score
 }
 
-func (c *SubAgentController) llmDispatchChoice(ctx context.Context, task, intent string, constraints []string, candidates []dispatchCandidate) (DispatchDecision, error) {
-	if c == nil || c.parent == nil || c.parent.Provider == nil {
+func (m *SubAgentManager) llmDispatchChoice(ctx context.Context, task, intent string, constraints []string, candidates []dispatchCandidate) (DispatchDecision, error) {
+	if m == nil || m.parent == nil || m.parent.provider == nil {
 		return DispatchDecision{}, fmt.Errorf("provider unavailable")
 	}
+
 	type candidateProfile struct {
 		SubID        string   `json:"sub_id"`
 		Role         string   `json:"role,omitempty"`
@@ -183,9 +182,9 @@ func (c *SubAgentController) llmDispatchChoice(ctx context.Context, task, intent
 	for _, item := range candidates {
 		payload.Candidates = append(payload.Candidates, candidateProfile{
 			SubID:        item.subID,
-			Role:         strings.TrimSpace(item.profile.Role),
-			Capabilities: append([]string(nil), item.profile.Capabilities...),
-			Constraints:  append([]string(nil), item.profile.Constraints...),
+			Role:         strings.TrimSpace(item.spec.Role),
+			Capabilities: append([]string(nil), item.spec.Capabilities...),
+			Constraints:  append([]string(nil), item.spec.Constraints...),
 		})
 	}
 	body, _ := json.Marshal(payload)
@@ -193,7 +192,7 @@ func (c *SubAgentController) llmDispatchChoice(ctx context.Context, task, intent
 		communi.NewSystemMessageWithoutId("Select exactly one target sub-agent. Return JSON only: {\"target\":\"sub_id\",\"reason\":\"...\",\"confidence\":0.0}."),
 		communi.NewUserMessageWithoutId(string(body)),
 	}
-	res, _, err := c.parent.Provider.Complete(ctx, c.parent.Model, msgs, nil)
+	res, _, err := m.parent.provider.Complete(ctx, m.parent.model, msgs, nil)
 	if err != nil {
 		return DispatchDecision{}, err
 	}
@@ -209,7 +208,7 @@ func (c *SubAgentController) llmDispatchChoice(ctx context.Context, task, intent
 	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
 		return DispatchDecision{}, err
 	}
-	target := sanitizeSubAgentKey(parsed.Target)
+	target := normalizeSubAgentID(parsed.Target)
 	if target == "" {
 		return DispatchDecision{}, fmt.Errorf("invalid target")
 	}

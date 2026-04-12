@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/memory"
 	"strings"
 )
@@ -46,7 +46,7 @@ func (t *memoryRecallTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Query       string   `json:"query"`
 		MemoryTypes []string `json:"memory_types"`
@@ -106,7 +106,7 @@ func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args 
 	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(b.String()))
 }
 
-func NewMemoryRecallTool() harness.Tool {
+func NewMemoryRecallTool() agent.Tool {
 	mgr, err := memory.DefaultManager()
 	if err != nil {
 		// Keep tool creatable even if memory is not configured; execute returns

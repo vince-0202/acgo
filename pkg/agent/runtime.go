@@ -1,4 +1,4 @@
-package agent_new
+package agent
 
 import (
 	"context"
@@ -78,6 +78,10 @@ type SubAgentRuntime interface {
 	List() []SubAgentInfo
 	Remove(string) error
 	Run(context.Context, string, string) (string, error)
+	DispatchTask(context.Context, DispatchRequest) (DispatchDecision, error)
+	SendMessage(fromSubID, toSubID, intent, payload, correlationID string, metadata map[string]any) (MessageEnvelope, error)
+	PullInbox(subID string, limit int, correlationID string) []MessageEnvelope
+	AckMessage(messageID string) (MessageEnvelope, error)
 }
 
 // Options configures a new minimal agent runtime.

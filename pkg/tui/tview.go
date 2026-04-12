@@ -7,23 +7,20 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"github.com/vince-0202/acgo/pkg/communi"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/errors"
 	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/keys"
-	"github.com/vince-0202/acgo/pkg/log"
-	"github.com/vince-0202/acgo/pkg/memory"
 )
 
 func tviewStyleLine(line string) string {
 	switch {
 	case strings.HasPrefix(line, "[Thinking]"):
 		content := strings.TrimSpace(strings.TrimPrefix(line, "[Thinking]"))
-		return "[#d0d0d0]" + tview.Escape("Thinking > "+content) + "[-]"
+		return "[#a9a9a9]" + tview.Escape("Thinking > "+content) + "[-]"
 	default:
 		return tview.Escape(line)
 	}
@@ -32,99 +29,97 @@ func tviewStyleLine(line string) string {
 func tviewTranscriptBody(history []string, streamThink, streamContent string) string {
 	var b strings.Builder
 	for _, line := range history {
-		b.WriteString(tviewStyleLine(stripANSI(line)) + "\n")
+		b.WriteString(tviewStyleLine(stripANSI(line)))
+		b.WriteString("\n")
 	}
 	if streamThink != "" {
-		b.WriteString("[#d0d0d0]" + tview.Escape("Thinking > "+stripANSI(streamThink)+"▌") + "[-]\n")
+		b.WriteString("[#a9a9a9]" + tview.Escape("Thinking > "+stripANSI(streamThink)+"▌") + "[-]\n")
 	}
 	if streamContent != "" {
 		b.WriteString(tview.Escape("Assistant: " + stripANSI(streamContent) + "▌"))
 	}
-	s := b.String()
-	if strings.TrimSpace(s) == "" {
+	out := b.String()
+	if strings.TrimSpace(out) == "" {
 		return " "
 	}
-	return s
-}
-
-func gopherASCIIArt() string {
-	return strings.Join([]string{
-		"   _    ____ ____  ___ ",
-		"  / \\  / ___/ ___|/ _ \\",
-		" / _ \\| |  | |  _| | | |",
-		"/ ___ \\ |__| |_| | |_| |",
-		"/_/   \\_\\____\\____|\\___/ ",
-		"",
-		"   ACGO standby",
-		"",
-		"Shortcuts:",
-		"  Shift+Tab  permission mode",
-		"  Ctrl+S     steering",
-		"  Ctrl+F     follow-up",
-	}, "\n")
-}
-
-func compactStatusLine(statusLine string) string {
-	statusLine = strings.TrimSpace(statusLine)
-	parts := strings.SplitN(statusLine, " | ", 3)
-	if len(parts) >= 3 && strings.HasPrefix(parts[0], "Session: ") {
-		statusLine = strings.TrimSpace(parts[1] + " | " + parts[2])
-	}
-	parts = strings.Split(statusLine, " | ")
-	if len(parts) >= 2 && strings.Contains(parts[0], "/") {
-		return strings.TrimSpace(strings.Join(parts[1:], " | "))
-	}
-	return statusLine
-}
-
-func rightStatusPanel(statusLine, tokenLine string) string {
-	var b strings.Builder
-	b.WriteString("Token usage\n")
-	b.WriteString("  " + strings.TrimSpace(tokenLine) + "\n\n")
-	b.WriteString("Status\n")
-	b.WriteString("  " + compactStatusLine(statusLine) + "\n\n")
-	b.WriteString("Monitoring\n")
-	b.WriteString("  - latency: --\n")
-	b.WriteString("  - tools: --\n")
-	b.WriteString("  - queue: --")
-	return b.String()
+	return out
 }
 
 func tokenSummaryLineFromUsage(in, out, total int) string {
-	if in == 0 && out == 0 && total == 0 {
-		return "—"
-	}
-	return fmt.Sprintf("in %d · out %d · total %d", in, out, total)
+	return fmt.Sprintf("in: %d · out: %d · total: %d", in, out, total)
 }
 
-func animateTowards(current, target int) int {
-	if current == target {
-		return current
+func rightStatusPanel(statusLine, tokenLine string, permissionMode string) string {
+	var b strings.Builder
+	b.WriteString("Tokens\n")
+	b.WriteString("  " + strings.TrimSpace(tokenLine) + "\n\n")
+	b.WriteString("Permission\n")
+	if strings.TrimSpace(permissionMode) == "" {
+		permissionMode = string(harness.PermissionModeDefault)
 	}
-	diff := target - current
-	step := diff / 4
-	if step == 0 {
-		if diff > 0 {
-			step = 1
-		} else {
-			step = -1
+	b.WriteString("  " + strings.TrimSpace(permissionMode) + "\n\n")
+	b.WriteString("Status\n")
+	b.WriteString("  " + strings.TrimSpace(statusLine))
+	return b.String()
+}
+
+func leftPanelText(m *Model, input string, activePane string, selectedSubID string) string {
+	input = strings.TrimSpace(input)
+	if strings.HasPrefix(input, "/") {
+		if p := strings.TrimSpace(m.commandPaletteFromText(input)); p != "" {
+			return p
 		}
 	}
-	next := current + step
-	if diff > 0 && next > target {
-		return target
+	subLine := selectedSubID
+	if strings.TrimSpace(subLine) == "" {
+		subLine = "(none)"
 	}
-	if diff < 0 && next < target {
-		return target
+	return strings.Join([]string{
+		"ACGO (tview)",
+		"",
+		"Shortcuts:",
+		"  Enter      send in active pane",
+		"  Esc        abort/quit",
+		"  Tab        switch pane (main/sub)",
+		"  Shift+Tab  cycle permission mode",
+		"  Ctrl+N/P   switch target sub",
+		"  PgUp/PgDn  scroll active pane",
+		"  Home/End   top/bottom",
+		"",
+		"Active pane: " + activePane,
+		"Sub target: " + subLine,
+		"",
+		"Commands:",
+		"  /help",
+		"  /status",
+		"  /abort",
+		"  /session new",
+		"  /compact",
+	}, "\n")
+}
+
+func permissionPanelText(prompt string, selected int, options []string) string {
+	var b strings.Builder
+	b.WriteString("Permission request\n")
+	b.WriteString("Use Up/Down + Enter (Esc to deny)\n\n")
+	for i, opt := range options {
+		prefix := "  "
+		if i == selected {
+			prefix = "> "
+		}
+		b.WriteString(prefix + opt + "\n")
 	}
-	return next
+	if strings.TrimSpace(prompt) != "" {
+		b.WriteString("\n")
+		b.WriteString(strings.TrimSpace(prompt))
+	}
+	return b.String()
 }
 
 func runWithTView(m *Model) error {
 	app := tview.NewApplication()
-	// Wheel scrolling must be handled here; with mouse reporting off, the shell scrolls scrollback instead of the transcript.
 	app.EnableMouse(true)
-	// Use a light gray theme instead of the default dark background.
+
 	tview.Styles.PrimitiveBackgroundColor = tcell.GetColor("#f2f2f2")
 	tview.Styles.ContrastBackgroundColor = tcell.GetColor("#e6e6e6")
 	tview.Styles.MoreContrastBackgroundColor = tcell.GetColor("#dcdcdc")
@@ -135,485 +130,257 @@ func runWithTView(m *Model) error {
 	tview.Styles.TertiaryTextColor = tcell.GetColor("#666666")
 
 	var mu sync.Mutex
-	mainStreaming := false
+	isStreamingMain := false
 	subStreaming := map[string]bool{}
+	activePane := "main" // "main" | "sub:<id>"
+	selectedSubID := ""
+	permissionMode := string(harness.PermissionModeDefault)
 
-	transcript := tview.NewTextView().SetDynamicColors(true).SetWrap(true).SetScrollable(true)
-	transcript.SetBorder(true).SetTitle(" Main agent")
-	leftPanel := tview.NewTextView().SetDynamicColors(false).SetWrap(true)
-	leftPanel.SetBorder(true).SetTitle(" " + m.agent.Provider.Name() + "/" + m.agent.Model.ID)
-	rightPanel := tview.NewTextView().SetDynamicColors(false).SetWrap(true)
-	rightPanel.SetBorder(true).SetTitle(" Runtime")
-	var root *tview.Flex
-	panelContainer := tview.NewFlex().SetDirection(tview.FlexRow)
-	subGrid := tview.NewFlex().SetDirection(tview.FlexRow)
-	mainPanel := tview.NewFlex().SetDirection(tview.FlexRow)
-	subViews := map[string]*tview.TextView{}
-	subInputs := map[string]*tview.InputField{}
-	subPanels := map[string]*tview.Flex{}
-	subInputBound := map[string]bool{}
-	const subAgentsPerRow = 3
-	rebuildSubAgentGrid := func(ids []string) {
-		subGrid.Clear()
-		for i := 0; i < len(ids); i += subAgentsPerRow {
-			row := tview.NewFlex().SetDirection(tview.FlexColumn)
-			end := i + subAgentsPerRow
-			if end > len(ids) {
-				end = len(ids)
-			}
-			for j := i; j < end; j++ {
-				sid := ids[j]
-				p := subPanels[sid]
-				if p == nil {
-					continue
-				}
-				row.AddItem(p, 0, 1, false)
-			}
-			if row.GetItemCount() == 0 {
-				continue
-			}
-			subGrid.AddItem(row, 0, 1, false)
-		}
-		// Before panelContainer is wired (early refresh), skip attach/detach.
-		if panelContainer.GetItemCount() == 0 {
-			return
-		}
-		if len(ids) == 0 {
-			if panelContainer.GetItemCount() > 1 {
-				panelContainer.RemoveItem(subGrid)
-			}
-			return
-		}
-		if panelContainer.GetItemCount() == 1 {
-			panelContainer.AddItem(subGrid, 0, 1, true)
-		}
-	}
-	focusKeys := []string{"main"}
-	activeKey := "main"
 	permissionAwaiting := false
 	permissionPrompt := ""
 	permissionOptions := []string{"Allow", "Allow Always (session)", "Deny"}
 	permissionSelected := 0
 	permissionAllowSession := map[string]bool{}
-	permissionQueueWaiting := 0
-	var permissionPromptMu sync.Mutex
 	var permissionDecisionCh chan string
-	displayUsageIn := 0
-	displayUsageOut := 0
-	displayUsageTotal := 0
-	targetUsageIn := 0
-	targetUsageOut := 0
-	targetUsageTotal := 0
-	seenMessageIDs := map[string]bool{}
-	for _, msg := range m.agent.GetMessages() {
-		if strings.TrimSpace(msg.ID) != "" {
-			seenMessageIDs[msg.ID] = true
-		}
+	var permissionPromptMu sync.Mutex
+	var permissionController *harness.PermissionController
+	pendingScheduledDispatch := false
+
+	mainTranscript := tview.NewTextView().SetDynamicColors(true).SetWrap(true).SetScrollable(true)
+	mainTranscript.SetBorder(true).SetTitle(" Main agent")
+	leftPanel := tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	leftPanel.SetBorder(true).SetTitle(" Commands")
+	rightPanel := tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	rightPanel.SetBorder(true).SetTitle(" Runtime")
+
+	mainInput := tview.NewInputField().SetLabel("> ")
+	mainInput.SetBorder(true).SetTitle(" Main input")
+
+	subContainer := tview.NewFlex().SetDirection(tview.FlexColumn)
+	subPanels := map[string]*tview.Flex{}
+	subViews := map[string]*tview.TextView{}
+	subInputs := map[string]*tview.InputField{}
+	subScrollLocked := map[string]bool{}
+	lastSubLayoutSig := ""
+
+	getSubInfos := func() []agent.SubAgentInfo {
+		infos := m.agent.SubAgentManager().List()
+		sort.Slice(infos, func(i, j int) bool { return infos[i].ID < infos[j].ID })
+		return infos
 	}
-
-	advanceUsageDisplay := func() bool {
-		nextIn := animateTowards(displayUsageIn, targetUsageIn)
-		nextOut := animateTowards(displayUsageOut, targetUsageOut)
-		nextTotal := animateTowards(displayUsageTotal, targetUsageTotal)
-		changed := nextIn != displayUsageIn || nextOut != displayUsageOut || nextTotal != displayUsageTotal
-		displayUsageIn = nextIn
-		displayUsageOut = nextOut
-		displayUsageTotal = nextTotal
-		return changed
-	}
-
-	mainInput := tview.NewInputField()
-	mainInput.SetLabel("> ")
-	mainInput.SetBorder(true).SetTitle(" Input")
-	mainPanel.AddItem(transcript, 0, 4, false)
-	mainPanel.AddItem(mainInput, 3, 0, true)
-
-	ensureSubPanel := func(subID string) (*tview.TextView, *tview.InputField, *tview.Flex) {
-		if tv, ok := subViews[subID]; ok {
-			return tv, subInputs[subID], subPanels[subID]
+	getSubIDs := func() []string {
+		infos := getSubInfos()
+		ids := make([]string, 0, len(infos))
+		for _, info := range infos {
+			ids = append(ids, info.ID)
 		}
-		tv := tview.NewTextView().SetDynamicColors(true).SetWrap(true).SetScrollable(true)
-		tv.SetBorder(true).SetTitle(" " + subID)
-		in := tview.NewInputField().SetLabel("> ")
-		in.SetBorder(true).SetTitle(" Input")
-		panel := tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(tv, 0, 4, false).
-			AddItem(in, 3, 0, false)
-		subViews[subID] = tv
-		subInputs[subID] = in
-		subPanels[subID] = panel
-		return tv, in, panel
+		return ids
 	}
-
-	applyFocusStyle := func() {
-		mainFocused := activeKey == "main"
-		if mainFocused {
-			transcript.SetTitle(" [::b]Main agent[::-]")
-			transcript.SetBorderColor(tcell.ColorYellow)
-			mainInput.SetBorderColor(tcell.ColorYellow)
-		} else {
-			transcript.SetTitle(" Main agent")
-			transcript.SetBorderColor(tcell.ColorWhite)
-			mainInput.SetBorderColor(tcell.ColorWhite)
+	normalizeSelectedSubID := func() {
+		ids := getSubIDs()
+		if len(ids) == 0 {
+			selectedSubID = ""
+			return
 		}
-		for sid, tv := range subViews {
-			in := subInputs[sid]
-			if sid == activeKey {
-				tv.SetTitle(" [::b]" + sid + "[::-]")
-				tv.SetBorderColor(tcell.ColorYellow)
-				in.SetBorderColor(tcell.ColorYellow)
-			} else {
-				tv.SetTitle(" " + sid)
-				tv.SetBorderColor(tcell.ColorWhite)
-				in.SetBorderColor(tcell.ColorWhite)
+		for _, id := range ids {
+			if id == selectedSubID {
+				return
 			}
 		}
+		selectedSubID = ids[0]
+	}
+	cycleSubTarget := func(step int) {
+		ids := getSubIDs()
+		if len(ids) == 0 {
+			selectedSubID = ""
+			return
+		}
+		normalizeSelectedSubID()
+		index := 0
+		for i := range ids {
+			if ids[i] == selectedSubID {
+				index = i
+				break
+			}
+		}
+		index = (index + step + len(ids)) % len(ids)
+		selectedSubID = ids[index]
+	}
+	subIDFromActivePane := func() (string, bool) {
+		if !strings.HasPrefix(activePane, "sub:") {
+			return "", false
+		}
+		id := strings.TrimSpace(strings.TrimPrefix(activePane, "sub:"))
+		if id == "" {
+			return "", false
+		}
+		return id, true
 	}
 
-	setActive := func(key string) {
-		activeKey = key
-		if key == "main" {
+	setActivePane := func(pane string) {
+		pane = strings.TrimSpace(pane)
+		if pane == "main" {
+			activePane = "main"
 			app.SetFocus(mainInput)
-		} else if in, ok := subInputs[key]; ok {
-			app.SetFocus(in)
+			return
 		}
-		applyFocusStyle()
+		if strings.HasPrefix(pane, "sub:") {
+			id := strings.TrimSpace(strings.TrimPrefix(pane, "sub:"))
+			if id != "" {
+				if in, ok := subInputs[id]; ok && in != nil {
+					activePane = "sub:" + id
+					selectedSubID = id
+					app.SetFocus(in)
+					return
+				}
+			}
+		}
+		activePane = "main"
+		app.SetFocus(mainInput)
 	}
 
-	focusedView := func() *tview.TextView {
-		if activeKey == "main" {
-			return transcript
-		}
-		tv, _, _ := ensureSubPanel(activeKey)
-		return tv
-	}
-
-	clampOffset := func(off int) int {
-		if off < 0 {
-			return 0
-		}
-		return off
-	}
-
-	scrollTextView := func(tv *tview.TextView, delta int) {
+	scrollView := func(tv *tview.TextView, delta int) {
 		if tv == nil {
 			return
 		}
-		prev, _ := tv.GetScrollOffset()
-		next := clampOffset(prev + delta)
-		tv.ScrollTo(next, 0)
+		row, col := tv.GetScrollOffset()
+		next := row + delta
+		if next < 0 {
+			next = 0
+		}
+		tv.ScrollTo(next, col)
 	}
-
-	scrollFocused := func(delta int) {
-		scrollTextView(focusedView(), delta)
+	scrollActive := func(delta int) {
+		if sid, ok := subIDFromActivePane(); ok {
+			scrollView(subViews[sid], delta)
+			subScrollLocked[sid] = true
+			return
+		}
+		scrollView(mainTranscript, delta)
+		m.mainScrollLocked = true
 	}
+	scrollActiveTop := func() {
+		if sid, ok := subIDFromActivePane(); ok {
+			if tv := subViews[sid]; tv != nil {
+				tv.ScrollToBeginning()
+				subScrollLocked[sid] = true
+			}
+			return
+		}
+		mainTranscript.ScrollToBeginning()
+		m.mainScrollLocked = true
+	}
+	scrollActiveBottom := func() {
+		if sid, ok := subIDFromActivePane(); ok {
+			if tv := subViews[sid]; tv != nil {
+				tv.ScrollToEnd()
+				subScrollLocked[sid] = false
+			}
+			return
+		}
+		mainTranscript.ScrollToEnd()
+		m.mainScrollLocked = false
+	}
+	var refresh func()
 
-	abortRunningSubAgent := func(subID string) bool {
-		if strings.TrimSpace(subID) == "" {
+	sendMain := func(raw string) (quit bool) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
 			return false
 		}
-		sac := m.agent.SubAgentController()
-		if sac == nil {
+		mainInput.SetText("")
+		if strings.HasPrefix(raw, "/") {
+			reply, q := m.runCommand(raw)
+			if strings.TrimSpace(reply) != "" {
+				m.history = append(m.history, "> "+reply)
+			}
+			return q
+		}
+		if isStreamingMain {
+			m.history = append(m.history, "> still streaming; use /abort")
 			return false
 		}
-		ag := sac.AgentBySubID(subID)
-		if ag == nil {
-			return false
-		}
-		st := ag.State()
-		if !st.IsStreaming && !subStreaming[subID] {
-			return false
-		}
-		ag.Abort()
-		return true
-	}
-
-	abortAllRunningSubAgents := func() int {
-		sac := m.agent.SubAgentController()
-		if sac == nil {
-			return 0
-		}
-		aborted := 0
-		for _, info := range sac.List() {
-			sid := info.SubID
-			ag := sac.AgentBySubID(sid)
-			if ag == nil {
-				continue
-			}
-			st := ag.State()
-			if !st.IsStreaming && !subStreaming[sid] {
-				continue
-			}
-			ag.Abort()
-			aborted++
-		}
-		return aborted
-	}
-
-	abortActiveConversation := func() bool {
-		aborted := false
-		if activeKey == "main" {
-			st := m.agent.State()
-			if st.IsStreaming || mainStreaming {
-				m.agent.Abort()
-				aborted = true
-			}
-			if n := abortAllRunningSubAgents(); n > 0 {
-				aborted = true
-			}
-			return aborted
-		}
-		if abortRunningSubAgent(activeKey) {
-			return true
-		}
+		m.history = append(m.history, "You: "+raw)
+		isStreamingMain = true
+		m.mainScrollLocked = false
+		m.startAgentStream(raw, func(ev streamEvent) {
+			app.QueueUpdateDraw(func() {
+				mu.Lock()
+				defer mu.Unlock()
+				if ev.TurnUsage != nil {
+					m.accumulateSessionUsage(ev.TurnUsage)
+				}
+				if ev.SubID != "" {
+					m.applyStreamEventToSub(ev)
+					if ev.Delta != "" || ev.ThinkingDelta != "" || ev.FinalContent != "" || ev.FinalThinking != "" || ev.ToolLine != nil {
+						subScrollLocked[ev.SubID] = false
+					}
+					refresh()
+					return
+				}
+				if ev.FinalThinking != "" {
+					m.history = append(m.history, "[Thinking] "+ev.FinalThinking)
+					m.streamingThinking = ""
+				}
+				if ev.FinalContent != "" {
+					m.history = append(m.history, "Assistant: "+ev.FinalContent)
+					m.streamingContent = ""
+				}
+				if ev.ToolLine != nil {
+					m.applyToolLine(ev.ToolLine)
+				}
+				if ev.ThinkingDelta != "" {
+					m.streamingThinking += ev.ThinkingDelta
+				}
+				if ev.Delta != "" {
+					m.streamingContent += ev.Delta
+				}
+				if ev.Delta != "" || ev.ThinkingDelta != "" || ev.FinalContent != "" || ev.FinalThinking != "" || ev.ToolLine != nil {
+					m.mainScrollLocked = false
+				}
+				if ev.Done || ev.Err != nil {
+					if ev.Err != nil {
+						m.err = ev.Err
+						if text := strings.TrimSpace(errors.FormatErrorForDisplay(ev.Err)); text != "" {
+							m.history = append(m.history, "Error: "+text)
+						}
+					} else {
+						if m.streamingThinking != "" {
+							m.history = append(m.history, "[Thinking] "+m.streamingThinking)
+						}
+						if m.streamingContent != "" {
+							m.history = append(m.history, "Assistant: "+m.streamingContent)
+						}
+					}
+					m.streamingThinking = ""
+					m.streamingContent = ""
+					isStreamingMain = false
+				}
+				refresh()
+			})
+		})
 		return false
 	}
 
-	refreshSubPanels := func() {
-		m.pruneSubAgentPanels()
-		ids := m.sortedSubIDs()
-		sort.Strings(ids)
-		focusKeys = []string{"main"}
-		focusKeys = append(focusKeys, ids...)
-		if activeKey != "main" {
-			found := false
-			for _, k := range focusKeys {
-				if k == activeKey {
-					found = true
-					break
-				}
-			}
-			if !found {
-				activeKey = "main"
-				app.SetFocus(mainInput)
-			}
-		}
-		for _, sid := range ids {
-			panel := m.ensureSubPanel(sid)
-			tv, in, sp := ensureSubPanel(sid)
-			_ = in
-			_ = sp
-			tv.SetText(tviewTranscriptBody(panel.history, panel.streamingThinking, panel.streamingContent))
-			// Always follow latest content on refresh.
-			tv.ScrollToEnd()
-		}
-		for sid := range subViews {
-			keep := false
-			for _, live := range ids {
-				if sid == live {
-					keep = true
-					break
-				}
-			}
-			if keep {
-				continue
-			}
-			delete(subViews, sid)
-			delete(subInputs, sid)
-			delete(subPanels, sid)
-			delete(subInputBound, sid)
-			delete(subStreaming, sid)
-		}
-		rebuildSubAgentGrid(ids)
-		applyFocusStyle()
-	}
-
-	renderPermissionSelection := func() string {
-		if !permissionAwaiting {
-			return ""
-		}
-		var b strings.Builder
-		if permissionQueueWaiting > 1 {
-			b.WriteString(fmt.Sprintf("Permission required (1/%d)  (↑/↓ select, Enter confirm, Esc deny)\n", permissionQueueWaiting))
-		} else {
-			b.WriteString("Permission required  (↑/↓ select, Enter confirm, Esc deny)\n")
-		}
-		for i, opt := range permissionOptions {
-			prefix := "  "
-			if i == permissionSelected {
-				prefix = "> "
-			}
-			b.WriteString(prefix + opt + "\n")
-		}
-		if strings.TrimSpace(permissionPrompt) != "" {
-			b.WriteString("\n")
-			b.WriteString(permissionPrompt + "\n")
-		}
-		return strings.TrimSuffix(b.String(), "\n")
-	}
-
-	updateHelpText := func() {
-		if permissionAwaiting {
-			leftPanel.SetText(renderPermissionSelection())
+	startDirectSubStream := func(subID, prompt string) {
+		subID = strings.TrimSpace(subID)
+		if subID == "" {
 			return
 		}
-		text := strings.TrimSpace(mainInput.GetText())
-		if strings.HasPrefix(text, "/") {
-			palette := strings.TrimSpace(commandPaletteFromText(m, text))
-			if palette == "" {
-				leftPanel.SetText(gopherASCIIArt())
-				return
-			}
-			leftPanel.SetText(palette)
-			return
-		}
-		leftPanel.SetText(gopherASCIIArt())
-	}
-
-	refresh := func() {
-		body := tviewTranscriptBody(m.history, m.streamingThinking, m.streamingContent)
-		transcript.SetText(body)
-		// Always follow latest content on refresh.
-		transcript.ScrollToEnd()
-		leftPanel.SetTitle(" " + m.agent.Provider.Name() + "/" + m.agent.Model.ID)
-		targetUsageIn = m.usageIn
-		targetUsageOut = m.usageOut
-		targetUsageTotal = m.usageTotal
-		advanceUsageDisplay()
-		rightPanel.SetText(rightStatusPanel(
-			m.statusLine(),
-			tokenSummaryLineFromUsage(displayUsageIn, displayUsageOut, displayUsageTotal),
-		))
-		refreshSubPanels()
-		updateHelpText()
-	}
-	refresh()
-
-	startMainStream := func(prompt string) {
-		mainStreaming = true
-		ch := make(chan streamEvent, 64)
-		var done atomic.Bool
-
-		go func() {
-			mu.Lock()
-			m.streamDone = &done
-			mu.Unlock()
-
-			unsub := m.agent.Subscribe(func(e communi.AgentEvent) {
-				m.handleAgentEvent(e, &done, ch, "")
-			})
-			defer unsub()
-
-			m.syncSubAgentSubscriptions(ch, &done)
-
-			ctx := context.Background()
-			if m.session != nil && strings.TrimSpace(m.session.Path) != "" {
-				ctx = memory.WithSessionID(ctx, m.session.Path)
-			}
-			err := m.agent.Prompt(ctx, prompt)
-			done.Store(true)
-			m.unsubscribeAllSubAgentsForCh(ch)
-
-			mu.Lock()
-			m.streamDone = nil
-			mu.Unlock()
-
-			ch <- streamEvent{Done: true, Err: err, Ch: ch}
-			close(ch)
-		}()
-
-		go func() {
-			for ev := range ch {
-				app.QueueUpdateDraw(func() {
-					mu.Lock()
-					defer mu.Unlock()
-					// New sub-agents can be created during this main turn (via sub_agent tool create).
-					// Keep syncing subscriptions so their subsequent task events can stream to sub panels.
-					m.syncSubAgentSubscriptions(ch, &done)
-
-					if ev.TurnUsage != nil {
-						m.accumulateSessionUsage(ev.TurnUsage)
-					}
-					if ev.SubID != "" {
-						m.applyStreamEventToSub(ev)
-						refresh()
-						return
-					}
-
-					if ev.FinalThinking != "" {
-						m.history = append(m.history, "[Thinking] "+ev.FinalThinking)
-						m.streamingThinking = ""
-					}
-					if ev.FinalContent != "" {
-						m.history = append(m.history, "Assistant: "+ev.FinalContent)
-						m.streamingContent = ""
-					}
-					if ev.ToolLine != nil {
-						m.applyToolLineStream(ev.SubID, ev.ToolLine)
-					}
-					if ev.ThinkingDelta != "" {
-						m.streamingThinking += ev.ThinkingDelta
-					}
-					if ev.Delta != "" {
-						m.streamingContent += ev.Delta
-					}
-					if ev.Done || ev.Err != nil {
-						if ev.Err != nil {
-							m.err = ev.Err
-							m.history = append(m.history, "Error: "+errors.FormatErrorForDisplay(ev.Err))
-						} else {
-							if m.streamingThinking != "" {
-								m.history = append(m.history, "[Thinking] "+m.streamingThinking)
-							}
-							if m.streamingContent != "" {
-								m.history = append(m.history, "Assistant: "+m.streamingContent)
-							}
-						}
-						m.streamingThinking = ""
-						m.streamingContent = ""
-						mainStreaming = false
-					}
-					refresh()
-				})
-			}
-		}()
-	}
-
-	startSubStream := func(subID string, prompt string) {
-		subStreaming[subID] = true
 		ch := make(chan streamEvent, 64)
 		var done atomic.Bool
 		go func() {
-			sac := m.agent.SubAgentController()
-			if sac == nil {
-				ch <- streamEvent{Done: true, Err: fmt.Errorf("sub-agent controller unavailable"), Ch: ch, SubID: subID}
-				close(ch)
-				return
-			}
-			ag := sac.AgentBySubID(subID)
-			if ag == nil {
+			child, ok := m.agent.SubAgentManager().Get(subID)
+			if !ok || child == nil {
 				ch <- streamEvent{Done: true, Err: fmt.Errorf("unknown sub-agent: %s", subID), Ch: ch, SubID: subID}
 				close(ch)
 				return
 			}
-			var sawAssistantText atomic.Bool
-			unsub := ag.Subscribe(func(e communi.AgentEvent) {
-				if e.Type == communi.EventMessageUpdate && e.LlmEvent != nil &&
-					(strings.TrimSpace(e.LlmEvent.TextDelta) != "" || strings.TrimSpace(e.LlmEvent.ThinkingDelta) != "") {
-					sawAssistantText.Store(true)
-				}
-				if e.Type == communi.EventMessageEnd && e.Message != nil &&
-					(strings.TrimSpace(e.Message.ContentBlocksToText()) != "" || strings.TrimSpace(e.Message.Thinking) != "") {
-					sawAssistantText.Store(true)
-				}
-				m.handleAgentEvent(e, &done, ch, subID)
+			unsub := child.Subscribe(func(event agent.Event, abort func()) {
+				m.handleAgentEvent(event, &done, ch, subID)
 			})
 			defer unsub()
-			err := ag.Prompt(context.Background(), prompt)
-			if err == nil && !sawAssistantText.Load() {
-				msgs := ag.GetMessages()
-				for i := len(msgs) - 1; i >= 0; i-- {
-					if msgs[i].Role != keys.AgentRoleAssistant {
-						continue
-					}
-					fc := strings.TrimSpace(msgs[i].ContentBlocksToText())
-					ft := strings.TrimSpace(msgs[i].Thinking)
-					if fc != "" || ft != "" {
-						ch <- streamEvent{FinalThinking: ft, FinalContent: fc, Ch: ch, SubID: subID}
-					}
-					break
-				}
-			}
+			err := child.Prompt(context.Background(), prompt)
 			done.Store(true)
 			ch <- streamEvent{Done: true, Err: err, Ch: ch, SubID: subID}
 			close(ch)
@@ -627,12 +394,17 @@ func runWithTView(m *Model) error {
 						m.accumulateSessionUsage(ev.TurnUsage)
 					}
 					m.applyStreamEventToSub(ev)
+					if ev.Delta != "" || ev.ThinkingDelta != "" || ev.FinalContent != "" || ev.FinalThinking != "" || ev.ToolLine != nil {
+						subScrollLocked[subID] = false
+					}
 					if ev.Done || ev.Err != nil {
+						subStreaming[subID] = false
 						if ev.Err != nil {
 							p := m.ensureSubPanel(subID)
-							p.history = append(p.history, "Error: "+errors.FormatErrorForDisplay(ev.Err))
+							if text := strings.TrimSpace(errors.FormatErrorForDisplay(ev.Err)); text != "" {
+								p.history = append(p.history, "Error: "+text)
+							}
 						}
-						subStreaming[subID] = false
 					}
 					refresh()
 				})
@@ -640,179 +412,267 @@ func runWithTView(m *Model) error {
 		}()
 	}
 
-	trySendMain := func(raw string, mode string) {
+	sendSubByID := func(subID, raw string) {
+		subID = strings.TrimSpace(subID)
 		raw = strings.TrimSpace(raw)
-		if raw == "" {
+		if subID == "" || raw == "" {
 			return
 		}
-		st := m.agent.State()
-		if st.IsStreaming || mainStreaming {
-			msg := communi.NewUserMessageWithoutId(raw)
-			switch mode {
-			case "followup":
-				m.agent.EnqueueFollowUp(msg)
-				m.history = append(m.history, "You: (follow-up) "+raw)
-			default:
-				m.agent.EnqueueSteering(msg)
-				m.history = append(m.history, "You: (steering) "+raw)
-			}
-			mainInput.SetText("")
-			refresh()
-			return
-		}
-
-		if strings.HasPrefix(raw, "/") {
-			reply, quit := m.runCommand(raw)
-			m.history = append(m.history, "> "+reply)
-			mainInput.SetText("")
-			refresh()
-			if quit {
-				app.Stop()
-			}
-			return
-		}
-
-		if m.pendingSkillContent != "" {
-			raw = m.pendingSkillContent + "\n\n---\n\n" + raw
-			m.pendingSkillContent = ""
-		}
-		m.history = append(m.history, "You: "+raw)
-		mainInput.SetText("")
-		refresh()
-		log.Debugf("send prompt len=%d", len(raw))
-		startMainStream(raw)
-	}
-
-	trySendSub := func(subID, raw string) {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			return
+		if in := subInputs[subID]; in != nil {
+			in.SetText("")
 		}
 		if subStreaming[subID] {
 			p := m.ensureSubPanel(subID)
-			p.history = append(p.history, "Error: sub-agent is busy, wait for current response")
-			refresh()
+			p.history = append(p.history, "Error: sub-agent is busy")
 			return
 		}
 		p := m.ensureSubPanel(subID)
 		p.history = append(p.history, "You: "+raw)
-		if in, ok := subInputs[subID]; ok {
-			in.SetText("")
-		}
-		refresh()
-		log.Debugf("send sub prompt sub_id=%s len=%d", subID, len(raw))
-		startSubStream(subID, raw)
+		subStreaming[subID] = true
+		subScrollLocked[subID] = false
+		startDirectSubStream(subID, raw)
 	}
 
-	mainInput.SetDoneFunc(func(_ tcell.Key) {
-		mu.Lock()
-		defer mu.Unlock()
-		trySendMain(mainInput.GetText(), "steering")
-	})
-
-	mainInput.SetChangedFunc(func(text string) {
-		_ = text
-		updateHelpText()
-	})
-
-	panelContainer.AddItem(mainPanel, 0, 1, true)
+	mainPanel := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(mainTranscript, 0, 6, false).
+		AddItem(mainInput, 3, 0, true)
+	panelContainer := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(mainPanel, 0, 1, true)
 	bottomPanel := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(leftPanel, 0, 1, false).
 		AddItem(rightPanel, 42, 0, false)
-	root = tview.NewFlex().SetDirection(tview.FlexRow).
+	root := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(panelContainer, 0, 1, true).
-		AddItem(bottomPanel, 11, 0, false)
+		AddItem(bottomPanel, 12, 0, false)
 
-	m.agent.SetPermissionConfirmHook(func(ctx context.Context, req harness.PermissionRequest) (bool, string, error) {
-		mu.Lock()
-		permissionQueueWaiting++
-		mu.Unlock()
-		app.QueueUpdateDraw(func() {
-			mu.Lock()
-			if permissionAwaiting {
-				updateHelpText()
-			}
-			mu.Unlock()
-		})
-		defer func() {
-			mu.Lock()
-			if permissionQueueWaiting > 0 {
-				permissionQueueWaiting--
-			}
-			mu.Unlock()
-			app.QueueUpdateDraw(func() {
-				mu.Lock()
-				if permissionAwaiting {
-					updateHelpText()
+	rebuildSubPanels := func() {
+		infos := getSubInfos()
+		ids := make([]string, 0, len(infos))
+		for _, info := range infos {
+			ids = append(ids, info.ID)
+		}
+		sig := strings.Join(ids, ",")
+		if sig != lastSubLayoutSig {
+			subContainer.Clear()
+			for _, info := range infos {
+				sid := info.ID
+				tv := subViews[sid]
+				in := subInputs[sid]
+				p := subPanels[sid]
+				if tv == nil || in == nil || p == nil {
+					tv = tview.NewTextView().SetDynamicColors(true).SetWrap(true).SetScrollable(true)
+					in = tview.NewInputField().SetLabel("> ")
+					p = tview.NewFlex().SetDirection(tview.FlexRow).
+						AddItem(tv, 0, 6, false).
+						AddItem(in, 3, 0, false)
+					subViews[sid] = tv
+					subInputs[sid] = in
+					subPanels[sid] = p
+					idCopy := sid
+					in.SetDoneFunc(func(key tcell.Key) {
+						if key != tcell.KeyEnter {
+							return
+						}
+						mu.Lock()
+						sendSubByID(idCopy, in.GetText())
+						activePane = "sub:" + idCopy
+						selectedSubID = idCopy
+						refresh()
+						mu.Unlock()
+					})
+					in.SetChangedFunc(func(text string) {
+						if activePane == "sub:"+idCopy && !permissionAwaiting {
+							leftPanel.SetText(leftPanelText(m, text, activePane, selectedSubID))
+						}
+					})
 				}
-				mu.Unlock()
-			})
-		}()
+				subContainer.AddItem(p, 0, 1, false)
+			}
 
-		// Serialize all permission prompts (main/sub agents) to avoid channel overwrite
-		// and stuck confirmations when multiple tool calls ask concurrently.
+			for sid := range subViews {
+				keep := false
+				for _, id := range ids {
+					if sid == id {
+						keep = true
+						break
+					}
+				}
+				if !keep {
+					delete(subViews, sid)
+					delete(subInputs, sid)
+					delete(subPanels, sid)
+					delete(subStreaming, sid)
+					delete(subScrollLocked, sid)
+				}
+			}
+			lastSubLayoutSig = sig
+
+			panelContainer.Clear()
+			panelContainer.AddItem(mainPanel, 0, 6, true)
+			if len(ids) > 0 {
+				panelContainer.AddItem(subContainer, 0, 4, false)
+			}
+		}
+
+		if len(ids) == 0 && strings.HasPrefix(activePane, "sub:") {
+			activePane = "main"
+			app.SetFocus(mainInput)
+		}
+		normalizeSelectedSubID()
+
+		for _, info := range infos {
+			sid := info.ID
+			tv := subViews[sid]
+			if tv == nil {
+				continue
+			}
+			p := m.ensureSubPanel(sid)
+			row, col := tv.GetScrollOffset()
+			tv.SetText(tviewTranscriptBody(p.history, p.streamingThinking, p.streamingContent))
+			if subScrollLocked[sid] {
+				tv.ScrollTo(row, col)
+			} else {
+				tv.ScrollToEnd()
+			}
+
+			title := "Sub: " + sid
+			if strings.TrimSpace(info.Role) != "" {
+				title += " [" + strings.TrimSpace(info.Role) + "]"
+			}
+			if activePane == "sub:"+sid {
+				title = "[::b]" + title + "[::-]"
+				tv.SetBorderColor(tcell.ColorYellow)
+				if in := subInputs[sid]; in != nil {
+					in.SetBorderColor(tcell.ColorYellow)
+				}
+			} else {
+				tv.SetBorderColor(tcell.ColorWhite)
+				if in := subInputs[sid]; in != nil {
+					in.SetBorderColor(tcell.ColorWhite)
+				}
+			}
+			tv.SetBorder(true)
+			tv.SetTitle(" " + title)
+			if in := subInputs[sid]; in != nil {
+				in.SetBorder(true)
+				in.SetTitle(" Input")
+			}
+		}
+	}
+
+	refresh = func() {
+		mainRow, mainCol := mainTranscript.GetScrollOffset()
+		mainTranscript.SetText(tviewTranscriptBody(m.history, m.streamingThinking, m.streamingContent))
+		if m.mainScrollLocked {
+			mainTranscript.ScrollTo(mainRow, mainCol)
+		} else {
+			mainTranscript.ScrollToEnd()
+		}
+		if activePane == "main" {
+			mainTranscript.SetTitle(" [::b]Main agent[::-]")
+			mainInput.SetBorderColor(tcell.ColorYellow)
+		} else {
+			mainTranscript.SetTitle(" Main agent")
+			mainInput.SetBorderColor(tcell.ColorWhite)
+		}
+
+		rebuildSubPanels()
+
+		rightPanel.SetText(rightStatusPanel(
+			m.statusLine(),
+			tokenSummaryLineFromUsage(m.usageIn, m.usageOut, m.usageTotal),
+			permissionMode,
+		))
+		if permissionAwaiting {
+			leftPanel.SetText(permissionPanelText(permissionPrompt, permissionSelected, permissionOptions))
+			return
+		}
+		activeInput := mainInput.GetText()
+		if sid, ok := subIDFromActivePane(); ok {
+			if in := subInputs[sid]; in != nil {
+				activeInput = in.GetText()
+			}
+		}
+		leftPanel.SetText(leftPanelText(m, activeInput, activePane, selectedSubID))
+	}
+
+	mainInput.SetDoneFunc(func(key tcell.Key) {
+		if key != tcell.KeyEnter {
+			return
+		}
+		mu.Lock()
+		quit := sendMain(mainInput.GetText())
+		refresh()
+		mu.Unlock()
+		if quit {
+			app.Stop()
+		}
+	})
+	mainInput.SetChangedFunc(func(text string) {
+		if activePane == "main" && !permissionAwaiting {
+			leftPanel.SetText(leftPanelText(m, text, activePane, selectedSubID))
+		}
+	})
+
+	confirmHook := func(ctx context.Context, req harness.PermissionRequest) (bool, string, error) {
 		permissionPromptMu.Lock()
 		defer permissionPromptMu.Unlock()
 
-		permissionKey := strings.TrimSpace(req.Action) + "|" + strings.TrimSpace(req.Resource)
+		key := strings.TrimSpace(req.Action) + "|" + strings.TrimSpace(req.Resource)
 		mu.Lock()
-		alwaysAllowed := permissionAllowSession[permissionKey]
+		allowed := permissionAllowSession[key]
 		mu.Unlock()
-		if alwaysAllowed {
+		if allowed {
 			return true, "approved by tui user (session remember)", nil
 		}
 
 		toolName, _ := req.Metadata["tool_name"].(string)
-		toolCallID, _ := req.Metadata["tool_call_id"].(string)
 		toolArgs, _ := req.Metadata["tool_args"].(string)
 		if strings.TrimSpace(toolName) == "" {
 			toolName = req.Resource
 		}
-
-		var text strings.Builder
-		text.WriteString("Tool permission request\n\n")
-		text.WriteString(formatToolGTLine(toolName, []byte(toolArgs)) + "\n")
-		if strings.TrimSpace(toolCallID) != "" {
-			text.WriteString("Call ID: " + toolCallID + "\n")
-		}
-		text.WriteString("Action: " + req.Action + "\n")
-		text.WriteString("Resource: " + req.Resource + "\n")
+		var prompt strings.Builder
+		prompt.WriteString("Tool: " + strings.TrimSpace(toolName) + "\n")
+		prompt.WriteString("Action: " + strings.TrimSpace(req.Action) + "\n")
+		prompt.WriteString("Resource: " + strings.TrimSpace(req.Resource) + "\n")
 		if strings.TrimSpace(toolArgs) != "" {
-			if len(toolArgs) > 600 {
-				toolArgs = toolArgs[:600] + "..."
+			args := strings.TrimSpace(toolArgs)
+			if len(args) > 800 {
+				args = args[:800] + "..."
 			}
-			text.WriteString("\nArguments (JSON):\n" + toolArgs + "\n")
+			prompt.WriteString("\nArgs:\n" + args + "\n")
 		}
-		text.WriteString("\nAllow this tool call?")
 
 		decisionCh := make(chan string, 1)
 		mu.Lock()
+		permissionAwaiting = true
+		permissionPrompt = strings.TrimSpace(prompt.String())
+		permissionSelected = 0
 		permissionDecisionCh = decisionCh
 		mu.Unlock()
 		app.QueueUpdateDraw(func() {
 			mu.Lock()
-			permissionAwaiting = true
-			permissionPrompt = strings.TrimSpace(text.String())
-			permissionSelected = 0
-			updateHelpText()
+			refresh()
 			mu.Unlock()
 		})
-		defer app.QueueUpdateDraw(func() {
-			mu.Lock()
-			permissionAwaiting = false
-			permissionPrompt = ""
-			permissionSelected = 0
-			permissionDecisionCh = nil
-			updateHelpText()
-			mu.Unlock()
-		})
+		defer func() {
+			app.QueueUpdateDraw(func() {
+				mu.Lock()
+				permissionAwaiting = false
+				permissionPrompt = ""
+				permissionSelected = 0
+				permissionDecisionCh = nil
+				refresh()
+				mu.Unlock()
+			})
+		}()
 
 		select {
 		case decision := <-decisionCh:
 			switch decision {
 			case "allow_always":
 				mu.Lock()
-				permissionAllowSession[permissionKey] = true
+				permissionAllowSession[key] = true
 				mu.Unlock()
 				return true, "approved by tui user (remembered for this session)", nil
 			case "allow_once":
@@ -823,11 +683,18 @@ func runWithTView(m *Model) error {
 		case <-ctx.Done():
 			return false, "permission confirmation canceled", ctx.Err()
 		}
-	})
+	}
 
-	app.SetRoot(root, true)
-	app.SetFocus(mainInput)
-	applyFocusStyle()
+	if m.harness != nil {
+		for _, controller := range m.harness.Controllers {
+			if pc, ok := controller.(*harness.PermissionController); ok && pc != nil {
+				permissionController = pc
+				pc.SetConfirmHook(confirmHook)
+				permissionMode = string(pc.Mode())
+			}
+		}
+	}
+
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		mu.Lock()
 		defer mu.Unlock()
@@ -838,23 +705,23 @@ func runWithTView(m *Model) error {
 				if permissionSelected > 0 {
 					permissionSelected--
 				}
-				updateHelpText()
+				refresh()
 				return nil
 			case tcell.KeyDown:
 				if permissionSelected < len(permissionOptions)-1 {
 					permissionSelected++
 				}
-				updateHelpText()
+				refresh()
 				return nil
 			case tcell.KeyEnter:
-				decision := "deny"
-				switch permissionSelected {
-				case 0:
-					decision = "allow_once"
-				case 1:
-					decision = "allow_always"
-				}
 				if permissionDecisionCh != nil {
+					decision := "deny"
+					switch permissionSelected {
+					case 0:
+						decision = "allow_once"
+					case 1:
+						decision = "allow_always"
+					}
 					select {
 					case permissionDecisionCh <- decision:
 					default:
@@ -875,41 +742,98 @@ func runWithTView(m *Model) error {
 
 		switch event.Key() {
 		case tcell.KeyBacktab:
-			label, err := m.cyclePermissionMode()
-			if err != nil {
-				m.history = append(m.history, "Error: switch permission mode failed: "+err.Error())
-			} else {
-				m.history = append(m.history, "System: permission mode -> "+label)
+			if permissionController != nil {
+				sequence := []harness.PermissionMode{
+					harness.PermissionModeDefault,
+					harness.PermissionModeAcceptEdits,
+					harness.PermissionModePlan,
+					harness.PermissionModeAuto,
+					harness.PermissionModeBypass,
+				}
+				current := permissionController.Mode()
+				idx := 0
+				for i := range sequence {
+					if sequence[i] == current {
+						idx = i
+						break
+					}
+				}
+				next := sequence[(idx+1)%len(sequence)]
+				if err := permissionController.SetMode(next); err != nil {
+					m.history = append(m.history, "Error: set permission mode failed: "+err.Error())
+				} else {
+					permissionMode = string(next)
+					m.history = append(m.history, "System: permission mode -> "+permissionMode)
+				}
 			}
 			refresh()
 			return nil
-		case tcell.KeyCtrlC:
-			if abortActiveConversation() {
-				refresh()
+		case tcell.KeyTab:
+			if sid, ok := subIDFromActivePane(); ok && sid != "" {
+				setActivePane("main")
+			} else {
+				normalizeSelectedSubID()
+				if selectedSubID != "" {
+					setActivePane("sub:" + selectedSubID)
+				}
+			}
+			refresh()
+			return nil
+		case tcell.KeyCtrlN:
+			cycleSubTarget(+1)
+			if _, ok := subIDFromActivePane(); ok && selectedSubID != "" {
+				setActivePane("sub:" + selectedSubID)
+			}
+			refresh()
+			return nil
+		case tcell.KeyCtrlP:
+			cycleSubTarget(-1)
+			if _, ok := subIDFromActivePane(); ok && selectedSubID != "" {
+				setActivePane("sub:" + selectedSubID)
+			}
+			refresh()
+			return nil
+		case tcell.KeyPgUp:
+			scrollActive(-12)
+			return nil
+		case tcell.KeyPgDn:
+			scrollActive(+12)
+			return nil
+		case tcell.KeyHome:
+			scrollActiveTop()
+			return nil
+		case tcell.KeyEnd:
+			scrollActiveBottom()
+			return nil
+		case tcell.KeyCtrlC, tcell.KeyEscape:
+			if isStreamingMain {
+				m.agent.Abort()
+				return nil
+			}
+			for sid, running := range subStreaming {
+				if !running {
+					continue
+				}
+				if child, ok := m.agent.SubAgentManager().Get(sid); ok && child != nil {
+					child.Abort()
+				}
+			}
+			anySubRunning := false
+			for _, running := range subStreaming {
+				if running {
+					anySubRunning = true
+					break
+				}
+			}
+			if anySubRunning {
 				return nil
 			}
 			app.Stop()
-			return nil
-		case tcell.KeyEscape:
-			if abortActiveConversation() {
-				refresh()
-				return nil
-			}
-			app.Stop()
-			return nil
-		case tcell.KeyCtrlS:
-			if activeKey == "main" {
-				trySendMain(mainInput.GetText(), "steering")
-			}
-			return nil
-		case tcell.KeyCtrlF:
-			if activeKey == "main" {
-				trySendMain(mainInput.GetText(), "followup")
-			}
 			return nil
 		}
 		return event
 	})
+
 	app.SetMouseCapture(func(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -921,253 +845,136 @@ func runWithTView(m *Model) error {
 			rx, ry, rw, rh := p.GetRect()
 			return x >= rx && x < rx+rw && y >= ry && y < ry+rh
 		}
+
 		if action == tview.MouseLeftClick {
-			if inRect(transcript) || inRect(mainInput) {
-				setActive("main")
+			if inRect(mainTranscript) || inRect(mainInput) {
+				setActivePane("main")
 			} else {
-				for sid, tv := range subViews {
-					if inRect(tv) || inRect(subInputs[sid]) {
-						setActive(sid)
+				for sid := range subViews {
+					if inRect(subViews[sid]) || inRect(subInputs[sid]) {
+						setActivePane("sub:" + sid)
+						selectedSubID = sid
 						break
 					}
 				}
 			}
+			refresh()
 		}
-		wheelOverOutput := func(delta int) {
-			if inRect(transcript) {
-				scrollTextView(transcript, delta)
-				return
-			}
-			for _, tv := range subViews {
-				if inRect(tv) {
-					scrollTextView(tv, delta)
-					return
-				}
-			}
-			scrollFocused(delta)
-		}
+
 		switch action {
 		case tview.MouseScrollUp:
-			wheelOverOutput(-3)
+			if inRect(mainTranscript) {
+				setActivePane("main")
+				scrollView(mainTranscript, -3)
+				m.mainScrollLocked = true
+				refresh()
+				return nil, tview.MouseConsumed
+			}
+			for sid := range subViews {
+				if inRect(subViews[sid]) {
+					setActivePane("sub:" + sid)
+					scrollView(subViews[sid], -3)
+					subScrollLocked[sid] = true
+					refresh()
+					return nil, tview.MouseConsumed
+				}
+			}
+			scrollActive(-3)
+			refresh()
 			return nil, tview.MouseConsumed
 		case tview.MouseScrollDown:
-			wheelOverOutput(3)
+			if inRect(mainTranscript) {
+				setActivePane("main")
+				scrollView(mainTranscript, 3)
+				m.mainScrollLocked = true
+				refresh()
+				return nil, tview.MouseConsumed
+			}
+			for sid := range subViews {
+				if inRect(subViews[sid]) {
+					setActivePane("sub:" + sid)
+					scrollView(subViews[sid], 3)
+					subScrollLocked[sid] = true
+					refresh()
+					return nil, tview.MouseConsumed
+				}
+			}
+			scrollActive(3)
+			refresh()
 			return nil, tview.MouseConsumed
 		}
 		return event, action
 	})
 
-	// Bind per-sub-agent send handler once inputs are created.
-	refreshSubPanels = func() {
-		m.pruneSubAgentPanels()
-		ids := m.sortedSubIDs()
-		sort.Strings(ids)
-		focusKeys = []string{"main"}
-		focusKeys = append(focusKeys, ids...)
-		if activeKey != "main" {
-			found := false
-			for _, k := range focusKeys {
-				if k == activeKey {
-					found = true
-					break
-				}
-			}
-			if !found {
-				activeKey = "main"
-				app.SetFocus(mainInput)
-			}
+	app.SetRoot(root, true)
+	backgroundUnsub := m.agent.Subscribe(func(event agent.Event, abort func()) {
+		if event.Message == nil {
+			return
 		}
-		for _, sid := range ids {
-			panel := m.ensureSubPanel(sid)
-			tv, in, _ := ensureSubPanel(sid)
-			if !subInputBound[sid] {
-				subID := sid
-				in.SetDoneFunc(func(_ tcell.Key) {
-					mu.Lock()
-					defer mu.Unlock()
-					trySendSub(subID, in.GetText())
-				})
-				subInputBound[sid] = true
-			}
-			tv.SetText(tviewTranscriptBody(panel.history, panel.streamingThinking, panel.streamingContent))
-			// Always follow latest content on refresh.
-			tv.ScrollToEnd()
+		if event.Type != agent.EventMessageEnd && event.Type != agent.EventToolExecutionEnd {
+			return
 		}
-		for sid := range subViews {
-			keep := false
-			for _, live := range ids {
-				if sid == live {
-					keep = true
-					break
-				}
-			}
-			if keep {
-				continue
-			}
-			delete(subViews, sid)
-			delete(subInputs, sid)
-			delete(subPanels, sid)
-			delete(subInputBound, sid)
-			delete(subStreaming, sid)
+		if m.streamDone != nil && !m.streamDone.Load() {
+			// Active foreground stream already consumes and renders these events.
+			return
 		}
-		rebuildSubAgentGrid(ids)
-		applyFocusStyle()
-	}
-	refresh()
-
-	// Keep a long-lived listener so background-triggered turns (e.g. cron tasks)
-	// are reflected in TUI even when no foreground runAgentStream is active.
-	backgroundUnsub := m.agent.Subscribe(func(e communi.AgentEvent) {
 		app.QueueUpdateDraw(func() {
 			mu.Lock()
 			defer mu.Unlock()
-			if mainStreaming {
-				// Foreground stream path already renders these events.
-				return
+			if m.session != nil {
+				_ = m.session.AppendMessage(*event.Message)
 			}
-			if e.LlmEvent != nil && e.LlmEvent.Usage != nil {
-				m.accumulateSessionUsage(e.LlmEvent.Usage)
-			}
-			if m.session != nil && e.Message != nil {
-				switch e.Type {
-				case communi.EventMessageEnd, communi.EventToolExecutionEnd:
-					_ = m.session.AppendMessage(*e.Message)
-				}
-			}
-			if e.Message != nil && strings.TrimSpace(e.Message.ID) != "" {
-				seenMessageIDs[e.Message.ID] = true
-			}
-			switch e.Type {
-			case communi.EventMessageStart:
-				if e.Message != nil && e.Message.Role == keys.AgentRoleUser {
-					if e.Message.SuppressTranscript() {
-						break
-					}
-					content := strings.TrimSpace(e.Message.ContentBlocksToText())
-					if content != "" {
-						m.history = append(m.history, "You: "+content)
-					}
-				}
-			case communi.EventMessageEnd:
-				if e.Message == nil {
+			switch event.Type {
+			case agent.EventMessageEnd:
+				if event.Message.Role == keys.AgentRoleUser && event.Message.SuppressTranscript() {
+					// A hidden scheduled dispatch message just arrived; mark the next assistant message.
+					pendingScheduledDispatch = true
 					return
 				}
-				if e.Message.Role == keys.AgentRoleAssistant {
-					thinking := strings.TrimSpace(e.Message.Thinking)
-					content := strings.TrimSpace(e.Message.ContentBlocksToText())
-					if thinking != "" {
-						m.history = append(m.history, "[Thinking] "+thinking)
-					}
-					if content != "" {
-						m.history = append(m.history, "Assistant: "+content)
-					}
+				if event.Message.Role != keys.AgentRoleAssistant {
+					return
 				}
-			case communi.EventToolExecutionStart:
-				toolName := strings.TrimSpace(e.ToolName)
+				finalThinking := strings.TrimSpace(event.Message.Thinking)
+				finalContent := strings.TrimSpace(event.Message.ContentBlocksToText())
+				if finalThinking == "" && finalContent == "" {
+					pendingScheduledDispatch = false
+					return
+				}
+				prefix := ""
+				if pendingScheduledDispatch {
+					prefix = "Reminder: "
+					pendingScheduledDispatch = false
+				}
+				if finalThinking != "" {
+					m.history = append(m.history, "[Thinking] "+finalThinking)
+				}
+				if finalContent != "" {
+					m.history = append(m.history, "Assistant: "+prefix+finalContent)
+				}
+				m.mainScrollLocked = false
+			case agent.EventToolExecutionEnd:
+				if event.Tool == nil {
+					return
+				}
+				toolName := strings.TrimSpace(event.Tool.Name())
 				if toolName == "" {
-					toolName = "unknown"
+					return
 				}
-				m.applyToolLineStream("", &toolLineStreamEvent{
-					Phase:      toolLinePhaseStart,
-					ToolCallID: e.ToolCallID,
-					ToolName:   toolName,
-					ToolArgs:   e.ToolArgs,
-				})
-			case communi.EventToolExecutionEnd:
-				toolName := strings.TrimSpace(e.ToolName)
-				if toolName == "" {
-					toolName = "unknown"
+				status := "ok"
+				if event.Error != nil || event.Message.IsError {
+					status = "error"
 				}
-				m.applyToolLineStream("", &toolLineStreamEvent{
-					Phase:      toolLinePhaseEnd,
-					ToolCallID: e.ToolCallID,
-					ToolName:   toolName,
-					ToolArgs:   e.ToolArgs,
-					Failed:     e.Error != nil || (e.Message != nil && e.Message.IsError),
-				})
-			case communi.EventTurnEnd:
-				// Fallback for background turns: if MessageEnd wasn't observed for any reason,
-				// pull the newest assistant message from context and render once by message ID.
-				msgs := m.agent.GetMessages()
-				for i := len(msgs) - 1; i >= 0; i-- {
-					msg := msgs[i]
-					if msg.Role != keys.AgentRoleAssistant {
-						continue
-					}
-					if strings.TrimSpace(msg.ID) != "" && seenMessageIDs[msg.ID] {
-						break
-					}
-					thinking := strings.TrimSpace(msg.Thinking)
-					content := strings.TrimSpace(msg.ContentBlocksToText())
-					if thinking != "" {
-						m.history = append(m.history, "[Thinking] "+thinking)
-					}
-					if content != "" {
-						m.history = append(m.history, "Assistant: "+content)
-					}
-					if strings.TrimSpace(msg.ID) != "" {
-						seenMessageIDs[msg.ID] = true
-					}
-					break
-				}
+				m.history = append(m.history, formatToolLine(toolName, status))
+				m.mainScrollLocked = false
 			}
 			refresh()
 		})
 	})
 	defer backgroundUnsub()
 
-	stopUsageAnim := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(90 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stopUsageAnim:
-				return
-			case <-ticker.C:
-				app.QueueUpdateDraw(func() {
-					mu.Lock()
-					defer mu.Unlock()
-					if !advanceUsageDisplay() {
-						return
-					}
-					rightPanel.SetText(rightStatusPanel(
-						m.statusLine(),
-						tokenSummaryLineFromUsage(displayUsageIn, displayUsageOut, displayUsageTotal),
-					))
-				})
-			}
-		}
-	}()
-
-	err := app.Run()
-	close(stopUsageAnim)
-	return err
-}
-
-func commandPaletteFromText(m *Model, raw string) string {
-	if !strings.HasPrefix(strings.TrimSpace(raw), "/") {
-		return ""
-	}
-	query := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(raw, "/")))
-	var out []string
-	for _, spec := range m.commandSpecs {
-		usage := spec.Usage
-		if strings.TrimSpace(usage) == "" {
-			usage = "/" + spec.Name
-		}
-		target := strings.ToLower(spec.Name + " " + strings.Join(spec.Aliases, " ") + " " + usage)
-		if query != "" && !strings.Contains(target, query) {
-			continue
-		}
-		if strings.TrimSpace(spec.Help) != "" {
-			out = append(out, fmt.Sprintf("%s - %s", usage, strings.TrimSpace(spec.Help)))
-		} else {
-			out = append(out, usage)
-		}
-		if len(out) >= 8 {
-			break
-		}
-	}
-	return strings.Join(out, "\n")
+	mu.Lock()
+	refresh()
+	setActivePane("main")
+	mu.Unlock()
+	return app.Run()
 }

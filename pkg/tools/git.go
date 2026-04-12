@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 const (
@@ -20,7 +20,7 @@ func resolveGitRepoRoot(ctx context.Context, dir string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
 		dir = "."
 	}
-	dir = harness.ResolveToolPath(ctx, dir)
+	dir = agent.ResolveToolPath(ctx, dir)
 	dir = filepath.Clean(dir)
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
@@ -67,7 +67,7 @@ func (t *gitStatusTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *gitStatusTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *gitStatusTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path string `json:"path"`
 	}
@@ -87,7 +87,7 @@ func (t *gitStatusTool) Execute(ctx context.Context, toolCallID string, args jso
 	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(text))
 }
 
-func NewGitStatusTool() harness.Tool {
+func NewGitStatusTool() agent.Tool {
 	return &gitStatusTool{}
 }
 
@@ -132,7 +132,7 @@ func (t *gitDiffTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *gitDiffTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *gitDiffTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path  string   `json:"path"`
 		Scope string   `json:"scope"`
@@ -193,7 +193,7 @@ func (t *gitDiffTool) Execute(ctx context.Context, toolCallID string, args json.
 	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(text))
 }
 
-func NewGitDiffTool() harness.Tool {
+func NewGitDiffTool() agent.Tool {
 	return &gitDiffTool{}
 }
 
@@ -229,7 +229,7 @@ func (t *gitLogTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *gitLogTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *gitLogTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path  string   `json:"path"`
 		Limit float64  `json:"limit"`
@@ -277,7 +277,7 @@ func (t *gitLogTool) Execute(ctx context.Context, toolCallID string, args json.R
 	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(text))
 }
 
-func NewGitLogTool() harness.Tool {
+func NewGitLogTool() agent.Tool {
 	return &gitLogTool{}
 }
 
@@ -308,7 +308,7 @@ func (t *gitBranchTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *gitBranchTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *gitBranchTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path string `json:"path"`
 		All  bool   `json:"all"`
@@ -333,7 +333,7 @@ func (t *gitBranchTool) Execute(ctx context.Context, toolCallID string, args jso
 	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(text))
 }
 
-func NewGitBranchTool() harness.Tool {
+func NewGitBranchTool() agent.Tool {
 	return &gitBranchTool{}
 }
 
@@ -366,7 +366,7 @@ func (t *gitAddTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *gitAddTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *gitAddTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path  string   `json:"path"`
 		Paths []string `json:"paths"`
@@ -403,7 +403,7 @@ func (t *gitAddTool) Execute(ctx context.Context, toolCallID string, args json.R
 	return communi.NewToolCallResult(toolCallID, msg)
 }
 
-func NewGitAddTool() harness.Tool {
+func NewGitAddTool() agent.Tool {
 	return &gitAddTool{}
 }
 
@@ -435,7 +435,7 @@ func (t *gitCommitTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *gitCommitTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *gitCommitTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path    string `json:"path"`
 		Message string `json:"message"`
@@ -462,6 +462,6 @@ func (t *gitCommitTool) Execute(ctx context.Context, toolCallID string, args jso
 	return communi.NewToolCallResult(toolCallID, text)
 }
 
-func NewGitCommitTool() harness.Tool {
+func NewGitCommitTool() agent.Tool {
 	return &gitCommitTool{}
 }

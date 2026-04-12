@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 const (
@@ -60,7 +60,7 @@ func (t *webSearchTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *webSearchTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *webSearchTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Query      string  `json:"query"`
 		MaxResults float64 `json:"max_results"`
@@ -142,7 +142,7 @@ func (t *webSearchTool) Execute(ctx context.Context, toolCallID string, args jso
 	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(b.String()))
 }
 
-func NewWebSearchTool() harness.Tool {
+func NewWebSearchTool() agent.Tool {
 	return &webSearchTool{
 		client: &http.Client{Timeout: defaultWebSearchTimeout},
 	}

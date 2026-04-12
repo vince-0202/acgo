@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 type gitWorktreeTool struct{}
@@ -50,7 +50,7 @@ func (t *gitWorktreeTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *gitWorktreeTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *gitWorktreeTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Action       string `json:"action"`
 		RepoPath     string `json:"repo_path"`
@@ -66,7 +66,7 @@ func (t *gitWorktreeTool) Execute(ctx context.Context, toolCallID string, args j
 	if repo == "" {
 		repo = "."
 	}
-	repo = harness.ResolveToolPath(ctx, repo)
+	repo = agent.ResolveToolPath(ctx, repo)
 
 	switch action {
 	case "list":
@@ -80,7 +80,7 @@ func (t *gitWorktreeTool) Execute(ctx context.Context, toolCallID string, args j
 		if wt == "" {
 			return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("worktree_path is required for add"))
 		}
-		wt = harness.ResolveToolPath(ctx, wt)
+		wt = agent.ResolveToolPath(ctx, wt)
 		gitArgs := []string{"-C", repo, "worktree", "add", wt}
 		br := strings.TrimSpace(params.Branch)
 		if br != "" {
@@ -100,7 +100,7 @@ func (t *gitWorktreeTool) Execute(ctx context.Context, toolCallID string, args j
 		if wt == "" {
 			return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("worktree_path is required for remove"))
 		}
-		wt = harness.ResolveToolPath(ctx, wt)
+		wt = agent.ResolveToolPath(ctx, wt)
 		gitArgs := []string{"-C", repo, "worktree", "remove"}
 		if params.Force {
 			gitArgs = append(gitArgs, "--force")
@@ -117,7 +117,7 @@ func (t *gitWorktreeTool) Execute(ctx context.Context, toolCallID string, args j
 }
 
 // NewGitWorktreeTool registers git worktree operations for the agent.
-func NewGitWorktreeTool() harness.Tool {
+func NewGitWorktreeTool() agent.Tool {
 	return &gitWorktreeTool{}
 }
 
