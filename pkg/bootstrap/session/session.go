@@ -2,14 +2,15 @@ package session
 
 import (
 	"fmt"
+	"path/filepath"
+
 	"github.com/vince-0202/acgo/pkg/config"
 	"github.com/vince-0202/acgo/pkg/session"
-	"path/filepath"
 )
 
-func LoadSession(sessionId string, settings config.SessionConfig) (*session.Session, error) {
+func LoadSession(sessionID string, settings config.SessionConfig) (*session.Session, error) {
 	var sess *session.Session
-	if sessionId == "" {
+	if sessionID == "" {
 		path, err := session.NewSessionPath(settings.Root)
 		if err != nil {
 			return nil, fmt.Errorf("create session path: %w", err)
@@ -18,12 +19,13 @@ func LoadSession(sessionId string, settings config.SessionConfig) (*session.Sess
 		if err != nil {
 			return nil, fmt.Errorf("create session: %w", err)
 		}
-	} else {
-		path := filepath.Join(settings.Root, sessionId+".jsonl")
-		sess = session.Open(path)
-		if err := sess.LoadMessage(); err != nil {
-			return nil, err
-		}
+		return sess, nil
+	}
+
+	path := filepath.Join(settings.Root, sessionID+".jsonl")
+	sess = session.Open(path)
+	if err := sess.LoadMessage(); err != nil {
+		return nil, err
 	}
 	return sess, nil
 }

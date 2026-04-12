@@ -1,6 +1,3 @@
-// Skills: two layers — system ~/.acgo/skills and project <cwd>/.acgo/skills —
-// each holds subfolders named <skill-name>/SKILL.md. YAML frontmatter + body
-// are parsed; full text is merged via SkillsController (ContextController.Load).
 package harness
 
 import (
@@ -8,63 +5,90 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/vince-0202/acgo/pkg/agent"
 )
 
 const skillFileName = "SKILL.md"
 
-// Skill is a single skill: name, description, and markdown body.
-type Skill struct {
+type skillDoc struct {
 	Name        string
 	Description string
 	Content     string
-	Path        string // path to SKILL.md for debugging/listing
+	Path        string
 }
 
-// SkillsController discovers skills from disk and merges them into the system prompt.
-// It mirrors the controller pattern used elsewhere in harness (e.g. ContextController.Load).
 type SkillsController struct {
-	workDir string
-	Skills  []Skill
-	Paths   []string
+	agent         agent.AgentRuntime
+	skills        []skillDoc
+	lastSkillText string
 }
 
-// NewSkillsController creates a controller for the given working directory
-// (typically process CWD so project .acgo/skills is discovered).
-func NewSkillsController(workDir string) *SkillsController {
-	return &SkillsController{workDir: workDir}
+func NewSkillsController() *SkillsController {
+	return &SkillsController{}
 }
 
-// SetWorkDir updates the project directory used to resolve <project>/.acgo/skills.
-func (sc *SkillsController) SetWorkDir(workDir string) {
-	if sc == nil {
+func (sc *SkillsController) Name() string {
+	return "skills"
+}
+
+func (sc *SkillsController) Install(agent agent.AgentRuntime) (func(), error) {
+	sc.agent = agent
+	sc.applySkillsPrompt()
+	unsub := agent.Subscribe(func(event agent.Event, abort func()) {
+		if event.Type == agent.EventAgentStart {
+			sc.applySkillsPrompt()
+		}
+	})
+	return func() {
+		unsub()
+		sc.agent = nil
+		sc.skills = nil
+		sc.lastSkillText = ""
+	}, nil
+}
+
+func (sc *SkillsController) applySkillsPrompt() {
+	if sc == nil || sc.agent == nil {
 		return
 	}
-	sc.workDir = strings.TrimSpace(workDir)
-}
+	workDir := strings.TrimSpace(sc.agent.ContextManager().ToolWorkingDirectory())
+	sc.skills = loadSkills(workDir)
+	nextSkillText := strings.TrimSpace(skillsPrompt(sc.skills))
 
-// Load reads system (~/.acgo/skills) then project (<workDir>/.acgo/skills).
-// Project skills override system skills when the name collides.
-func (sc *SkillsController) Load() {
-	if sc == nil {
-		return
+	prompt := sc.agent.ContextManager().SystemPrompt()
+	trimLast := strings.TrimSpace(sc.lastSkillText)
+	if trimLast != "" {
+		promptTrim := strings.TrimSpace(prompt)
+		if strings.HasSuffix(promptTrim, trimLast) {
+			keep := strings.TrimSpace(strings.TrimSuffix(promptTrim, trimLast))
+			prompt = keep
+		}
 	}
-	sc.Skills, sc.Paths = Load(sc.workDir)
+
+	if nextSkillText != "" {
+		if strings.TrimSpace(prompt) == "" {
+			prompt = nextSkillText
+		} else {
+			prompt = strings.TrimSpace(prompt) + "\n\n" + nextSkillText
+		}
+	}
+	sc.agent.ContextManager().ReplacePrompt(prompt)
+	sc.lastSkillText = nextSkillText
 }
 
-// SystemPrompt appends a "## Skills" section with the full body of each SKILL.md
-// so the model has skill instructions in context without a separate tool.
-func (sc *SkillsController) SystemPrompt() string {
+func skillsPrompt(skills []skillDoc) string {
 	var b strings.Builder
 	b.WriteString("\n\n## Skills\n\n")
 	b.WriteString("Two layers: (1) system `~/.acgo/skills/<skill-name>/SKILL.md`; ")
 	b.WriteString("(2) project `<project-root>/.acgo/skills/<skill-name>/SKILL.md`. ")
 	b.WriteString("Project skills override system skills for the same name. ")
 	b.WriteString("Apply a skill when it matches the user's task.\n\n")
-	if sc == nil || len(sc.Skills) == 0 {
+	if len(skills) == 0 {
 		b.WriteString("(none)\n")
 		return b.String()
 	}
-	for i, s := range sc.Skills {
+	for i, s := range skills {
 		if i > 0 {
 			b.WriteString("\n---\n\n")
 		}
@@ -81,22 +105,14 @@ func (sc *SkillsController) SystemPrompt() string {
 	return b.String()
 }
 
-// Load discovers skills from two directories only:
-//  1. system:  ~/.acgo/skills  (user home)
-//  2. project: <workDir>/.acgo/skills  (typically current project root / cwd)
-//
-// Same skill name in project overrides system. Returns merged list and loaded file paths.
-func Load(workDir string) ([]Skill, []string) {
-	byName := make(map[string]Skill)
-	var paths []string
+func loadSkills(workDir string) []skillDoc {
+	byName := make(map[string]skillDoc)
 
 	home, _ := os.UserHomeDir()
-	systemSkillsDir := filepath.Join(home, ".acgo", "skills")
-	collectSkillsFromDir(systemSkillsDir, byName, &paths)
+	collectSkillsFromDir(filepath.Join(home, ".acgo", "skills"), byName)
 
 	if root := absProjectRoot(workDir); root != "" {
-		projectSkillsDir := filepath.Join(root, ".acgo", "skills")
-		collectSkillsFromDir(projectSkillsDir, byName, &paths)
+		collectSkillsFromDir(filepath.Join(root, ".acgo", "skills"), byName)
 	}
 
 	names := make([]string, 0, len(byName))
@@ -104,90 +120,65 @@ func Load(workDir string) ([]Skill, []string) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	out := make([]Skill, 0, len(names))
+
+	out := make([]skillDoc, 0, len(names))
 	for _, name := range names {
 		out = append(out, byName[name])
 	}
-	return out, paths
+	return out
 }
 
-func collectSkillsFromDir(skillsDir string, byName map[string]Skill, paths *[]string) {
+func collectSkillsFromDir(skillsDir string, byName map[string]skillDoc) {
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
 		return
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
-		skillPath := filepath.Join(skillsDir, e.Name(), skillFileName)
-		b, err := os.ReadFile(skillPath)
+		skillPath := filepath.Join(skillsDir, entry.Name(), skillFileName)
+		body, err := os.ReadFile(skillPath)
 		if err != nil {
 			continue
 		}
-		*paths = append(*paths, skillPath)
-		s, ok := parseSkillMD(string(b), skillPath)
-		if !ok || strings.TrimSpace(s.Name) == "" {
-			// Fallback: allow SKILL.md without YAML frontmatter.
-			// Use directory name as the skill name, and infer a short description from body.
-			body := strings.TrimSpace(string(b))
-			desc := ""
-			if body != "" {
-				// take first paragraph as description
-				if idx := strings.Index(body, "\n\n"); idx > 0 {
-					desc = strings.TrimSpace(body[:idx])
-				} else {
-					desc = body
-				}
-				if len(desc) > 200 {
-					desc = desc[:200] + "..."
-				}
-			}
-			byName[e.Name()] = Skill{
-				Name:        e.Name(),
-				Description: desc,
-				Content:     body,
+		doc, ok := parseSkillMD(string(body), skillPath)
+		if !ok || strings.TrimSpace(doc.Name) == "" {
+			byName[entry.Name()] = skillDoc{
+				Name:        entry.Name(),
+				Description: summarizeSkillBody(string(body)),
+				Content:     strings.TrimSpace(string(body)),
 				Path:        skillPath,
 			}
 			continue
 		}
-		byName[strings.TrimSpace(s.Name)] = s
+		byName[strings.TrimSpace(doc.Name)] = doc
 	}
 }
 
-// parseSkillMD parses SKILL.md content: YAML frontmatter between --- and ---, then body.
-// Returns (skill, true) or (zero value, false) on parse failure.
-func parseSkillMD(content, path string) (Skill, bool) {
+func parseSkillMD(content, path string) (skillDoc, bool) {
 	const delim = "---"
 	content = strings.TrimSuffix(content, "\n")
-	first := strings.Index(content, delim)
-	if first < 0 {
-		return Skill{}, false
+	if !strings.HasPrefix(content, delim) {
+		return skillDoc{}, false
 	}
-	afterFirst := strings.TrimPrefix(content[len(delim):], "\n")
-	second := strings.Index(afterFirst, delim)
+	rest := strings.TrimPrefix(content, delim)
+	rest = strings.TrimPrefix(rest, "\n")
+	second := strings.Index(rest, delim)
 	if second < 0 {
-		return Skill{}, false
+		return skillDoc{}, false
 	}
-	front := strings.TrimSpace(afterFirst[:second])
-	body := strings.TrimSpace(afterFirst[second+len(delim):])
+	front := strings.TrimSpace(rest[:second])
+	body := strings.TrimSpace(rest[second+len(delim):])
 
 	name, desc := parseFrontmatter(front)
 	if name == "" {
-		return Skill{}, false
+		return skillDoc{}, false
 	}
-	if desc == "" && body != "" {
-		// use first paragraph of body as description fallback
-		if idx := strings.Index(body, "\n\n"); idx > 0 {
-			desc = strings.TrimSpace(body[:idx])
-		} else {
-			desc = strings.TrimSpace(body)
-			if len(desc) > 200 {
-				desc = desc[:200] + "..."
-			}
-		}
+	if desc == "" {
+		desc = summarizeSkillBody(body)
 	}
-	return Skill{
+	return skillDoc{
 		Name:        name,
 		Description: desc,
 		Content:     body,
@@ -195,36 +186,48 @@ func parseSkillMD(content, path string) (Skill, bool) {
 	}, true
 }
 
-func parseFrontmatter(s string) (name, description string) {
-	lines := strings.Split(s, "\n")
-	for _, line := range lines {
+func parseFrontmatter(front string) (name, description string) {
+	for _, line := range strings.Split(front, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if idx := strings.Index(line, ":"); idx > 0 {
-			key := strings.TrimSpace(strings.ToLower(line[:idx]))
-			val := strings.TrimSpace(line[idx+1:])
-			val = strings.Trim(val, "\"'")
-			switch key {
-			case "name":
-				name = val
-			case "description":
-				description = val
-			}
+		idx := strings.Index(line, ":")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(strings.ToLower(line[:idx]))
+		val := strings.Trim(strings.TrimSpace(line[idx+1:]), "\"'")
+		switch key {
+		case "name":
+			name = val
+		case "description":
+			description = val
 		}
 	}
 	return name, description
 }
 
-// absProjectRoot returns a clean absolute path for the project directory used
-// to resolve .acgo/skills. Empty workDir yields "".
-func absProjectRoot(workDir string) string {
-	s := strings.TrimSpace(workDir)
-	if s == "" {
+func summarizeSkillBody(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
 		return ""
 	}
-	abs, err := filepath.Abs(s)
+	if idx := strings.Index(body, "\n\n"); idx > 0 {
+		body = strings.TrimSpace(body[:idx])
+	}
+	if len(body) > 200 {
+		return body[:200] + "..."
+	}
+	return body
+}
+
+func absProjectRoot(workDir string) string {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(workDir)
 	if err != nil || abs == "" {
 		return ""
 	}

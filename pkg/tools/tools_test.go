@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 func toolResultText(tr communi.ToolCallResult) string {
@@ -52,7 +52,7 @@ func TestEditTool_WriteAndReadBack(t *testing.T) {
 func TestEditTool_InvalidArgs(t *testing.T) {
 	edit := NewEditTool()
 	ctx := context.Background()
-	if err := harness.ValidateToolArguments(edit.Name(), edit.JSONSchema(), []byte(`{}`)); err == nil {
+	if err := agent.ValidateToolArguments(edit.Name(), edit.JSONSchema(), []byte(`{}`)); err == nil {
 		t.Error("expected validation error for missing path")
 	}
 	res := edit.Execute(ctx, "call-2", []byte(`{"path":"/tmp/x","content":1}`), nil)

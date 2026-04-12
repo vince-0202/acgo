@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 const (
@@ -46,7 +46,7 @@ func (t *webFetchTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *webFetchTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *webFetchTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		URL      string  `json:"url"`
 		MaxBytes float64 `json:"max_bytes"`
@@ -92,7 +92,7 @@ func (t *webFetchTool) Execute(ctx context.Context, toolCallID string, args json
 	return communi.NewToolCallResult(toolCallID, out)
 }
 
-func NewWebFetchTool() harness.Tool {
+func NewWebFetchTool() agent.Tool {
 	return &webFetchTool{
 		client: &http.Client{Timeout: defaultWebFetchTimeout},
 	}

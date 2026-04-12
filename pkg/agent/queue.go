@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-type QueueManager struct {
+type queueManager struct {
 	queueMu sync.Mutex // protects SteeringQueue and FollowUpQueue
 
 	// SteeringQueue holds user/steering messages to process next; consumed before FollowUpQueue.
@@ -16,20 +16,24 @@ type QueueManager struct {
 	FollowUpQueue []communi.Message
 }
 
-func (qm *QueueManager) Clean() {
+func (qm *queueManager) Clear() {
 	qm.queueMu.Lock()
 	qm.SteeringQueue = nil
 	qm.FollowUpQueue = nil
 	qm.queueMu.Unlock()
 }
 
-func (qm *QueueManager) EnqueueSteering(msg communi.Message) {
+func (qm *queueManager) clear() {
+	qm.Clear()
+}
+
+func (qm *queueManager) EnqueueSteering(msg communi.Message) {
 	qm.queueMu.Lock()
 	defer qm.queueMu.Unlock()
 	qm.SteeringQueue = append(qm.SteeringQueue, msg)
 }
 
-func (qm *QueueManager) EnqueueFollowUp(msg communi.Message) {
+func (qm *queueManager) EnqueueFollowUp(msg communi.Message) {
 	qm.queueMu.Lock()
 	defer qm.queueMu.Unlock()
 	qm.FollowUpQueue = append(qm.FollowUpQueue, msg)
@@ -37,7 +41,7 @@ func (qm *QueueManager) EnqueueFollowUp(msg communi.Message) {
 
 // DrainOneFromQueues removes and returns one message: steering first, then follow-up.
 // Caller must not hold queueMu.
-func (qm *QueueManager) DrainOneFromQueues() *communi.Message {
+func (qm *queueManager) DrainOneFromQueues() *communi.Message {
 	qm.queueMu.Lock()
 	defer qm.queueMu.Unlock()
 	if len(qm.SteeringQueue) > 0 {

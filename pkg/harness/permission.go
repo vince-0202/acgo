@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/communi"
 )
 
 type PermissionMode string
@@ -57,6 +60,7 @@ type PermissionController struct {
 	mode        PermissionMode
 	rules       []PermissionRule
 	confirmHook PermissionConfirmHook
+	agent       agent.AgentRuntime
 }
 
 type PermissionsOptions struct {
@@ -76,10 +80,48 @@ func NewPermissionController(mode PermissionMode, rules []PermissionRule, hook P
 	}
 }
 
-func (pc *PermissionController) SetConfirmHook(hook PermissionConfirmHook) {
+func (pc *PermissionController) Name() string {
+	return "permission"
+}
+
+func (pc *PermissionController) Clone() *PermissionController {
 	if pc == nil {
-		return
+		return nil
 	}
+	return NewPermissionController(pc.Mode(), pc.Rules(), pc.GetConfirmHook())
+}
+
+func (pc *PermissionController) Install(agent agent.AgentRuntime) (func(), error) {
+	pc.agent = agent
+	pc.syncPlanMode()
+	uninstall := agent.ToolManager().RegisterMiddleware(func(ctx context.Context, req agent.ToolExecutionRequest, next agent.ToolExecutionHandler) (communi.ToolCallResult, error) {
+		toolArgs := strings.TrimSpace(string(req.Args))
+		workDir := agent.ContextManager().ToolWorkingDirectory()
+		_, err := pc.Check(ctx, PermissionRequest{
+			Action:   "tool.execute",
+			Resource: "tool:" + req.Tool.Name(),
+			Metadata: map[string]any{
+				"tool_call_id": req.ToolCall.ID,
+				"tool_name":    req.Tool.Name(),
+				"tool_args":    toolArgs,
+				"workdir":      workDir,
+			},
+		})
+		if err != nil {
+			res := communi.ErrorToolCallResult(req.ToolCall.ID, err)
+			return res, err
+		}
+		return next(ctx, req)
+	})
+	return func() {
+		uninstall()
+		if pc.agent == agent {
+			pc.agent = nil
+		}
+	}, nil
+}
+
+func (pc *PermissionController) SetConfirmHook(hook PermissionConfirmHook) {
 	pc.confirmHook = hook
 }
 
@@ -109,7 +151,19 @@ func (pc *PermissionController) SetMode(mode PermissionMode) error {
 		return err
 	}
 	pc.mode = mode
+	pc.syncPlanMode()
 	return nil
+}
+
+func (pc *PermissionController) syncPlanMode() {
+	if pc == nil || pc.agent == nil {
+		return
+	}
+	setter, ok := pc.agent.(interface{ SetPlanMode(bool) })
+	if !ok {
+		return
+	}
+	setter.SetPlanMode(pc.Mode() == PermissionModePlan)
 }
 
 // GetConfirmHook returns the current UI confirmation callback, if any.

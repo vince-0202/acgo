@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"strings"
 	"time"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 const maxToolFlowSteps = 20
@@ -57,8 +57,8 @@ func (t *toolFlowTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *toolFlowTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
-	executor, ok := harness.ToolExecutorFromContext(ctx)
+func (t *toolFlowTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
+	executor, ok := agent.ToolExecutorFromContext(ctx)
 	if !ok {
 		return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("tool_flow executor is unavailable"))
 	}
@@ -146,7 +146,7 @@ func (t *toolFlowTool) Execute(ctx context.Context, toolCallID string, args json
 		}
 		callID := fmt.Sprintf("%s-step-%d", toolCallID, i+1)
 		start := time.Now()
-		res, err := executor.ExecuteByName(ctx, callID, toolName, stepArgs, harness.ExecuteToolOptions{
+		res, err := executor.ExecuteByName(ctx, callID, toolName, stepArgs, agent.ExecuteToolOptions{
 			AppendTranscript: false,
 			EmitEvents:       false,
 		})
@@ -211,6 +211,6 @@ func toolResultToText(res communi.ToolCallResult) string {
 	return strings.TrimSpace(b.String())
 }
 
-func NewToolFlowTool() harness.Tool {
+func NewToolFlowTool() agent.Tool {
 	return &toolFlowTool{}
 }

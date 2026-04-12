@@ -11,18 +11,16 @@ import (
 	"github.com/vince-0202/acgo/pkg/runtime"
 )
 
-// LoadAndRuntimeInit setting and runtime
+// LoadAndRuntimeInit loads settings and registers providers into runtime.
 func LoadAndRuntimeInit(options ...config.SettingOption) (*config.Settings, error) {
 	settingConfig := config.NewSettingConfig(options...)
 	settings, err := config.LoadSettingsByConfig(settingConfig)
-
 	if err != nil {
 		return nil, err
 	}
 	for _, provider := range newProviderBySettings(settings.Agent) {
 		runtime.RegisterProvider(provider)
 	}
-
 	return settings, nil
 }
 
@@ -36,10 +34,6 @@ func newProviderBySettings(settings config.AgentSetting) []llm.Provider {
 			providers = append(providers, deepseek.NewClient(providerSetting))
 		case keys.ProviderTypeQwen:
 			providers = append(providers, qwen.NewClient(providerSetting))
-		//case keys.ProviderTypeAnthropic:
-		//	providers = append(providers, anthropic.NewClient(providerSetting))
-		//case keys.ProviderTypeGemini:
-		//	providers = append(providers, gemini.NewClient(providerSetting))
 		case keys.ProviderTypeGLM:
 			providers = append(providers, glm.NewClient(providerSetting))
 		default:

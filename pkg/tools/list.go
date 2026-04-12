@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,7 +37,7 @@ func (t *listTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Path string `json:"path"`
 		Glob string `json:"glob"`
@@ -49,7 +49,7 @@ func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 	if dir == "" {
 		dir = "."
 	}
-	dir = harness.ResolveToolPath(ctx, dir)
+	dir = agent.ResolveToolPath(ctx, dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
@@ -79,6 +79,6 @@ func (t *listTool) Execute(ctx context.Context, toolCallID string, args json.Raw
 }
 
 // NewListTool creates a new list (ls/find) AgentTool.
-func NewListTool() harness.Tool {
+func NewListTool() agent.Tool {
 	return &listTool{}
 }

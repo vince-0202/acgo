@@ -2,12 +2,11 @@ package tools
 
 import (
 	"context"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 func TestGitWorktreeTool_List(t *testing.T) {
@@ -26,7 +25,7 @@ func TestGitWorktreeTool_List(t *testing.T) {
 	run("git", "config", "user.name", "t")
 	_ = exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init").Run()
 
-	ctx := harness.ContextWithToolWorkingDir(context.Background(), dir)
+	ctx := agent.ContextWithToolWorkingDir(context.Background(), dir)
 	res := NewGitWorktreeTool().Execute(ctx, "c1", []byte(`{"action":"list","repo_path":"`+dir+`"}`), nil)
 	if res.IsError() {
 		t.Fatal(toolResultText(res))

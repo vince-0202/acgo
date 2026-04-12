@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 	"github.com/vince-0202/acgo/pkg/rag"
 	"strings"
 )
@@ -39,7 +39,7 @@ func (t *ragTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		Query string  `json:"query"`
 		TopK  float64 `json:"top_k"`
@@ -79,7 +79,7 @@ func (t *ragTool) Execute(ctx context.Context, toolCallID string, args json.RawM
 }
 
 // NewRagTool creates a new RAG search AgentTool.
-func NewRagTool() harness.Tool {
+func NewRagTool() agent.Tool {
 	return &ragTool{
 		retriever: rag.GetRetriever(),
 	}

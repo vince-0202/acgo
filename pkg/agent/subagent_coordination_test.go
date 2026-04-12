@@ -2,100 +2,116 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
-
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
-func newTestParentAgent() *Agent {
-	return New("parent-test", Options{
-		WorkDir: "/tmp",
+func newTestAgent(id, workDir string) *Agent {
+	return New(Options{
+		ID:       id,
+		WorkDir:  workDir,
+		Provider: nil,
 	})
-}
-
-func TestCreateWithProfileAndListRole(t *testing.T) {
-	parent := newTestParentAgent()
-	sac := NewSubAgentController(parent)
-	_, err := sac.CreateWithOptions(harness.SubAgentCreateOptions{
-		SubID: "dev",
-		Profile: harness.SubAgentProfile{
-			Role:         "developer",
-			RolePrompt:   "write implementation code",
-			Capabilities: []string{"implement", "refactor"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateWithOptions failed: %v", err)
-	}
-
-	rows := sac.List()
-	if len(rows) != 1 {
-		t.Fatalf("List len = %d, want 1", len(rows))
-	}
-	if rows[0].Role != "developer" {
-		t.Fatalf("List role = %q, want %q", rows[0].Role, "developer")
-	}
-	prof, ok := sac.GetProfile("dev")
-	if !ok {
-		t.Fatalf("GetProfile missing")
-	}
-	if prof.RolePrompt == "" {
-		t.Fatalf("RolePrompt should be set")
-	}
-}
-
-func TestMessageBusSendPullAck(t *testing.T) {
-	parent := newTestParentAgent()
-	sac := NewSubAgentController(parent)
-	_, _ = sac.CreateWithOptions(harness.SubAgentCreateOptions{
-		SubID:   "planner",
-		Profile: harness.SubAgentProfile{Capabilities: []string{"plan"}, AllowedPeers: []string{"coder"}},
-	})
-	_, _ = sac.CreateWithOptions(harness.SubAgentCreateOptions{
-		SubID:   "coder",
-		Profile: harness.SubAgentProfile{Capabilities: []string{"implement"}},
-	})
-
-	msg, err := sac.SendMessage("planner", "coder", "implement", "do task", "corr-1", nil)
-	if err != nil {
-		t.Fatalf("SendMessage failed: %v", err)
-	}
-	inbox := sac.PullInbox("coder", 10, "")
-	if len(inbox) != 1 {
-		t.Fatalf("PullInbox len = %d, want 1", len(inbox))
-	}
-	if inbox[0].ID != msg.ID {
-		t.Fatalf("PullInbox got %q, want %q", inbox[0].ID, msg.ID)
-	}
-	acked, err := sac.AckMessage(msg.ID)
-	if err != nil {
-		t.Fatalf("AckMessage failed: %v", err)
-	}
-	if acked.AckedAt == nil {
-		t.Fatalf("AckedAt should not be nil")
-	}
 }
 
 func TestDispatchFallbackDeterministic(t *testing.T) {
-	parent := newTestParentAgent()
-	sac := NewSubAgentController(parent)
-	_, _ = sac.CreateWithOptions(harness.SubAgentCreateOptions{
-		SubID:   "search",
-		Profile: harness.SubAgentProfile{Capabilities: []string{"search", "research"}},
-	})
-	_, _ = sac.CreateWithOptions(harness.SubAgentCreateOptions{
-		SubID:   "coder",
-		Profile: harness.SubAgentProfile{Capabilities: []string{"implement", "code"}},
-	})
+	root := t.TempDir()
+	parent := newTestAgent("parent-test", root)
+	manager := parent.SubAgentManager().(*SubAgentManager)
 
-	decision, err := sac.DispatchTask(context.Background(), DispatchRequest{
+	coder := newTestAgent("child-coder", root)
+	searcher := newTestAgent("child-search", root)
+	if err := manager.Register("search", SubAgentSpec{Capabilities: []string{"search", "research"}}, searcher); err != nil {
+		t.Fatalf("register search: %v", err)
+	}
+	if err := manager.Register("coder", SubAgentSpec{Capabilities: []string{"implement", "code"}}, coder); err != nil {
+		t.Fatalf("register coder: %v", err)
+	}
+
+	decision, err := manager.DispatchTask(context.Background(), DispatchRequest{
 		Task:   "please implement a cron task manager",
 		Intent: "implement",
 	})
 	if err != nil {
-		t.Fatalf("DispatchTask failed: %v", err)
+		t.Fatalf("dispatch: %v", err)
 	}
 	if decision.Target != "coder" {
-		t.Fatalf("Dispatch target = %q, want %q", decision.Target, "coder")
+		t.Fatalf("dispatch target = %q, want %q", decision.Target, "coder")
+	}
+}
+
+func TestMessageBusSendPullAck(t *testing.T) {
+	root := t.TempDir()
+	parent := newTestAgent("parent-test", root)
+	manager := parent.SubAgentManager().(*SubAgentManager)
+
+	planner := newTestAgent("child-planner", root)
+	coder := newTestAgent("child-coder", root)
+	if err := manager.Register("planner", SubAgentSpec{
+		Capabilities: []string{"plan"},
+		AllowedPeers: []string{"coder"},
+	}, planner); err != nil {
+		t.Fatalf("register planner: %v", err)
+	}
+	if err := manager.Register("coder", SubAgentSpec{
+		Capabilities: []string{"implement"},
+	}, coder); err != nil {
+		t.Fatalf("register coder: %v", err)
+	}
+
+	msg, err := manager.SendMessage("planner", "coder", "implement", "do task", "corr-1", nil)
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	inbox := manager.PullInbox("coder", 10, "")
+	if len(inbox) != 1 {
+		t.Fatalf("inbox length = %d, want 1", len(inbox))
+	}
+	if inbox[0].ID != msg.ID {
+		t.Fatalf("inbox id = %q, want %q", inbox[0].ID, msg.ID)
+	}
+	acked, err := manager.AckMessage(msg.ID)
+	if err != nil {
+		t.Fatalf("ack message: %v", err)
+	}
+	if acked.AckedAt == nil {
+		t.Fatalf("acked_at should not be nil")
+	}
+}
+
+func TestMessageRouteDeniedReturnsStructuredError(t *testing.T) {
+	root := t.TempDir()
+	parent := newTestAgent("parent-test", root)
+	manager := parent.SubAgentManager().(*SubAgentManager)
+
+	planner := newTestAgent("child-planner", root)
+	coder := newTestAgent("child-coder", root)
+	reviewer := newTestAgent("child-reviewer", root)
+	if err := manager.Register("planner", SubAgentSpec{
+		Capabilities: []string{"plan"},
+		AllowedPeers: []string{"coder"},
+	}, planner); err != nil {
+		t.Fatalf("register planner: %v", err)
+	}
+	if err := manager.Register("coder", SubAgentSpec{Capabilities: []string{"implement"}}, coder); err != nil {
+		t.Fatalf("register coder: %v", err)
+	}
+	if err := manager.Register("reviewer", SubAgentSpec{Capabilities: []string{"review"}}, reviewer); err != nil {
+		t.Fatalf("register reviewer: %v", err)
+	}
+
+	_, err := manager.SendMessage("planner", "reviewer", "review", "please review", "corr-2", nil)
+	if err == nil {
+		t.Fatalf("expected route denied error")
+	}
+	var msgErr *SubAgentMessageError
+	if !errors.As(err, &msgErr) {
+		t.Fatalf("expected SubAgentMessageError, got %T", err)
+	}
+	if msgErr.Code != "route_denied" {
+		t.Fatalf("error code = %q, want %q", msgErr.Code, "route_denied")
+	}
+	if msgErr.FromSubID != "planner" || msgErr.ToSubID != "reviewer" {
+		t.Fatalf("unexpected route fields: from=%q to=%q", msgErr.FromSubID, msgErr.ToSubID)
 	}
 }

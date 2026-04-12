@@ -3,227 +3,271 @@ package harness
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/keys"
-	"github.com/vince-0202/acgo/pkg/llm"
 )
 
-const defaultSystemPrompt = `You are acgo, an interactive coding agent focused on software engineering tasks.
-Use available tools to complete user requests accurately and efficiently.
+// TrimMode selects how TrimMessage behaves.
+type TrimMode int
 
-Core behavior:
-- Execute the requested task end-to-end when feasible. Do what was asked; nothing more, nothing less.
-- If requirements are unclear or there are multiple materially different implementations, ask concise clarifying questions.
-- For ambitious tasks, default to trying unless the user asks to reduce scope.
-- Read relevant code before modifying it. Understand existing patterns first.
-- Prefer minimal, focused changes over broad refactors.
-- Avoid over-engineering, speculative abstractions, and unnecessary new files.
-- Do not add unrelated features, docs, comments, or type changes outside the requested scope.
+const (
+	TrimModeDeterministic TrimMode = iota
+	TrimModeLLMCompact
+)
 
-Code quality and safety:
-- Prioritize correct, secure code. Avoid introducing command injection, SQL injection, XSS, path traversal, and other common vulnerabilities.
-- Validate at system boundaries (user input, external APIs); do not add impossible-state defensive code everywhere.
-- If you notice insecure or incorrect code you just introduced, fix it immediately.
-
-Execution policy:
-- Prefer dedicated tools over generic shell commands when equivalent tools exist.
-- When registered sub-agents exist (via the sub_agent tool), prefer delegating substantive work—implementation, codebase exploration, and long tool chains—to them. Act as coordinator: decompose goals, assign tasks to the right sub_id, integrate outputs, and resolve blockers. Use your own tools mainly for trivial one-offs or when delegation does not fit. When creating sub-agents, give each a distinct profile so in-scope work, hard constraints, and peer collaboration limits are explicit and non-overlapping.
-- Use parallel tool calls when tasks are independent; use sequential calls when dependencies exist.
-- When a task needs multiple tool steps to produce a specific output, prefer building one tool_flow call with ordered steps instead of many separate tool calls.
-- In tool_flow, define clear step intent and arguments, and return structured outputs that directly support the user's requested final result.
-- If a command or approach is blocked, do not brute-force retries. Diagnose and choose an alternative path.
-- Do not perform risky or hard-to-reverse actions without explicit user confirmation.
-
-Treat the following as risky unless already explicitly authorized:
-- Destructive operations (deleting files/branches, overwriting uncommitted changes, dropping data).
-- Hard-to-reverse git operations (force push, reset --hard, amending published commits).
-- Actions affecting shared or external systems (pushing code, changing CI/CD, posting externally, changing permissions).
-
-Communication style:
-- Be concise and direct. Lead with action/result.
-- Provide short milestone updates during longer tasks.
-- Surface only decisions, blockers, and key outcomes that matter to the user.
-- Avoid speculative time estimates; focus on next concrete actions.
-- Do not pad responses with unnecessary repetition.`
-
-func NewContextController(agentId, workDir string) *ContextController {
-	return &ContextController{
-		agentId:  agentId,
-		workDir:  filepath.Join(workDir, agentId),
-		Options:  &ContextOptions{},
-		Messages: make([]communi.Message, 0),
-		Paths:    make([]string, 0),
-		Prompt:   defaultSystemPrompt,
-	}
+// TrimMessageOptions configures a single TrimMessage invocation.
+type TrimMessageOptions struct {
+	Mode TrimMode
+	// Force skips auto OR/cooldown checks when Mode is TrimModeLLMCompact (manual /compact).
+	Force             bool
+	TranscriptPath    string
+	ExtraInstructions string
 }
 
-// ContextController contains the full list of messages for a call.
-// It can be freely manipulated before being passed to a provider.
 type ContextController struct {
-	agentId string
-	workDir string
-	// projectRoot, when set, overrides workDir for Load() (SYSTEM.md / AGENTS.md walk) and tool working directory.
-	projectRoot string
-	Paths       []string // File paths that were read (for logging/debug)
-	Prompt      string   // Final merged system prompt
-	Options     *ContextOptions
-	Messages    []communi.Message `json:"messages"`
-	Cancel      context.CancelFunc
+	agent   agent.AgentRuntime
+	context agent.ContextRuntime
 
-	compactProvider         llm.Provider
-	compactModel            llm.Model
+	basePrompt        string
+	persistentAppends []string
+
 	streamsSinceLastCompact int
 	everCompacted           bool
 	transcriptPath          string
 }
 
-func (cc *ContextController) Load() {
-	cc.Prompt = defaultSystemPrompt
-	cc.Paths = nil
+func NewContextController() *ContextController {
+	return &ContextController{}
+}
+
+func (cc *ContextController) Name() string {
+	return "context"
+}
+
+func (cc *ContextController) Install(agent agent.AgentRuntime) (func(), error) {
+	cc.agent = agent
+	cc.context = agent.ContextManager()
+	cc.basePrompt = cc.context.SystemPrompt()
+	cc.loadPromptFromDisk()
+	unsub := agent.Subscribe(func(event agent.Event, abort func()) {
+		switch event.Type {
+		case agent.EventAgentStart:
+			cc.loadPromptFromDisk()
+		case agent.EventBeforeLLMCall:
+			_ = cc.TrimMessage(context.Background(), nil)
+		}
+	})
+	return func() {
+		unsub()
+		cc.agent = nil
+		cc.context = nil
+	}, nil
+}
+
+// TrimMessage applies context reduction. Pass nil req for automatic mode: may run LLM compact when
+// ContextOptions triggers match and compact LLM is configured; otherwise deterministic trim only.
+func (cc *ContextController) TrimMessage(ctx context.Context, req *TrimMessageOptions) error {
+	if cc == nil || cc.context == nil {
+		return nil
+	}
+	opts := cc.context.ContextOptions()
+	if opts == nil {
+		return nil
+	}
+
+	switch {
+	case req != nil && req.Mode == TrimModeDeterministic:
+		cc.applyDeterministicTrim(opts)
+		cc.noteStreamAfterTrim(false)
+		return nil
+
+	case req != nil && req.Mode == TrimModeLLMCompact && req.Force:
+		err := cc.compactWithLLM(ctx, req)
+		if err != nil {
+			return err
+		}
+		cc.noteStreamAfterTrim(true)
+		return nil
+
+	case req == nil:
+		if cc.shouldAutoCompact(opts) {
+			treq := &TrimMessageOptions{
+				Mode:              TrimModeLLMCompact,
+				Force:             false,
+				TranscriptPath:    cc.transcriptPath,
+				ExtraInstructions: strings.TrimSpace(opts.CompactExtraInstructions),
+			}
+			err := cc.compactWithLLM(ctx, treq)
+			if err != nil {
+				return err
+			}
+			cc.noteStreamAfterTrim(true)
+			return nil
+		}
+		cc.applyDeterministicTrim(opts)
+		cc.noteStreamAfterTrim(false)
+		return nil
+
+	default:
+		cc.applyDeterministicTrim(opts)
+		cc.noteStreamAfterTrim(false)
+		return nil
+	}
+}
+
+func (cc *ContextController) shouldAutoCompact(opts *agent.ContextOptions) bool {
+	if !cc.hasCompactLLM() {
+		return false
+	}
+	if opts.AutoCompactMinEstimatedTokens <= 0 && opts.AutoCompactMinUserTurns <= 0 {
+		return false
+	}
+	prefix, body := splitLeadingSystem(cc.context.MessageSnapshot())
+	_ = prefix
+	tok := estimateTotalTokens(body)
+	userTurns := countUserMessages(body)
+
+	tokenHit := opts.AutoCompactMinEstimatedTokens > 0 && tok >= opts.AutoCompactMinEstimatedTokens
+	turnHit := opts.AutoCompactMinUserTurns > 0 && userTurns >= opts.AutoCompactMinUserTurns
+	if !tokenHit && !turnHit {
+		return false
+	}
+	// Cooldown only applies after at least one prior compact (no "previous" compact on first auto).
+	if opts.AutoCompactCooldownStreams > 0 && cc.everCompacted && cc.streamsSinceLastCompact < opts.AutoCompactCooldownStreams {
+		return false
+	}
+	return true
+}
+
+func (cc *ContextController) noteStreamAfterTrim(didCompact bool) {
+	if cc == nil {
+		return
+	}
+	if didCompact {
+		cc.everCompacted = true
+		cc.streamsSinceLastCompact = 0
+		return
+	}
+	cc.streamsSinceLastCompact++
+}
+
+func (cc *ContextController) applyDeterministicTrim(opts *agent.ContextOptions) {
+	msgs := cc.context.MessageSnapshot()
+	if len(msgs) == 0 {
+		return
+	}
+	if opts.MaxTurns <= 0 && opts.MaxEstimatedTokens <= 0 && opts.MinToolResultsToKeep <= 0 {
+		return
+	}
+
+	prefix, body := splitLeadingSystem(msgs)
+	if len(body) == 0 {
+		cc.context.ReplaceMessages(prefix)
+		return
+	}
+
+	turns := segmentTurnsByUser(body)
+	if len(turns) == 0 {
+		cc.context.ReplaceMessages(append(append([]communi.Message(nil), prefix...), body...))
+		return
+	}
+
+	kept := turns
+	if opts.MaxTurns > 0 && len(turns) > opts.MaxTurns {
+		kept = turns[len(turns)-opts.MaxTurns:]
+	}
+
+	kept = ensureMinToolResults(kept, turns, opts.MinToolResultsToKeep)
+	out := concatTurns(kept)
+	out = trimByTokenBudget(prefix, out, opts.MaxEstimatedTokens)
+
+	cc.context.ReplaceMessages(append(append([]communi.Message(nil), prefix...), out...))
+}
+
+func (cc *ContextController) loadPromptFromDisk() {
+	if cc == nil || cc.context == nil {
+		return
+	}
+	prompt := strings.TrimSpace(cc.basePrompt)
+	if prompt == "" {
+		prompt = strings.TrimSpace(cc.context.SystemPrompt())
+	}
+	var paths []string
 	root := cc.effectiveContextRoot()
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		absRoot = root
 	}
-	cc.applyDir(absRoot)
-	for _, d := range cc.dirsFromRootToCwd(absRoot) {
-		cc.applyDir(d)
+	prompt, paths = cc.applyDir(prompt, paths, absRoot)
+	for _, dir := range dirsFromRootToCwd(absRoot) {
+		prompt, paths = cc.applyDir(prompt, paths, dir)
+	}
+	for _, extra := range cc.persistentAppends {
+		extra = strings.TrimSpace(extra)
+		if extra == "" {
+			continue
+		}
+		if strings.TrimSpace(prompt) == "" {
+			prompt = extra
+		} else {
+			prompt += "\n\n" + extra
+		}
+	}
+	cc.context.ReplacePrompt(prompt)
+	cc.context.SetLoadedPaths(paths)
+}
+
+func (cc *ContextController) AppendPersistentPrompt(prompt string) {
+	if cc == nil {
+		return
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return
+	}
+	cc.persistentAppends = append(cc.persistentAppends, prompt)
+	if cc.context != nil {
+		cc.loadPromptFromDisk()
 	}
 }
 
 func (cc *ContextController) effectiveContextRoot() string {
-	if cc == nil {
+	if cc == nil || cc.context == nil {
 		return "."
 	}
-	if s := strings.TrimSpace(cc.projectRoot); s != "" {
+	if s := strings.TrimSpace(cc.context.ProjectRoot()); s != "" {
 		return filepath.Clean(s)
 	}
-	return cc.workDir
+	return cc.context.WorkDir()
 }
 
-// SetProjectRoot sets the agent's project directory (git worktree or any checkout). Empty clears the override.
-func (cc *ContextController) SetProjectRoot(dir string) error {
-	if cc == nil {
-		return fmt.Errorf("context controller is nil")
+func (cc *ContextController) applyDir(prompt string, paths []string, dir string) (string, []string) {
+	if b, p := readFile(dir, "SYSTEM.md"); b != "" {
+		prompt = strings.TrimSpace(b)
+		paths = append(paths, p)
 	}
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
-		cc.projectRoot = ""
-		return nil
-	}
-	abs, err := filepath.Abs(filepath.Clean(dir))
-	if err != nil {
-		return err
-	}
-	st, err := os.Stat(abs)
-	if err != nil {
-		return err
-	}
-	if !st.IsDir() {
-		return fmt.Errorf("not a directory: %s", abs)
-	}
-	cc.projectRoot = abs
-	return nil
-}
-
-// ProjectRoot returns the optional project override path, or "" if unset.
-func (cc *ContextController) ProjectRoot() string {
-	if cc == nil {
-		return ""
-	}
-	return cc.projectRoot
-}
-
-// ToolWorkingDirectory is the directory tools should use as cwd and for relative paths.
-func (cc *ContextController) ToolWorkingDirectory() string {
-	if cc == nil {
-		return ""
-	}
-	if s := strings.TrimSpace(cc.projectRoot); s != "" {
-		return s
-	}
-	abs, err := filepath.Abs(cc.workDir)
-	if err != nil {
-		return cc.workDir
-	}
-	return abs
-}
-
-// SetTranscriptPath sets an optional path shown after LLM compaction (full transcript / session file).
-func (cc *ContextController) SetTranscriptPath(path string) {
-	if cc == nil {
-		return
-	}
-	cc.transcriptPath = strings.TrimSpace(path)
-}
-
-// SetCompactLLM wires provider and model for LLM-based context compaction inside TrimMessage.
-func (cc *ContextController) SetCompactLLM(p llm.Provider, m llm.Model) {
-	if cc == nil {
-		return
-	}
-	cc.compactProvider = p
-	cc.compactModel = m
-}
-
-func (cc *ContextController) MessageToJson() string {
-	res, _ := json.Marshal(cc.Messages)
-	return string(res)
-}
-
-func (cc *ContextController) AppendMessage(msg ...communi.Message) {
-	if cc.Messages == nil {
-		cc.Messages = make([]communi.Message, 0)
-	}
-	cc.Messages = append(cc.Messages, msg...)
-}
-
-func (cc *ContextController) LastAssistantMessage() *communi.Message {
-	for _, message := range cc.Messages {
-		if message.Role == keys.AgentRoleAssistant {
-			return &message
+	if b, p := readFile(dir, "AGENTS.md"); b != "" {
+		if strings.TrimSpace(prompt) == "" {
+			prompt = strings.TrimSpace(b)
+		} else {
+			prompt += "\n\n" + strings.TrimSpace(b)
 		}
+		paths = append(paths, p)
 	}
-	return nil
-}
-
-// ReplaceMessages replaces the entire message history with a copy of msgs.
-// Callers can use this to load a session or batch-replace history.
-func (cc *ContextController) ReplaceMessages(msgs []communi.Message) {
-	if msgs == nil {
-		cc.Messages = nil
-		return
+	if b, p := readFile(dir, "APPEND_SYSTEM.md"); b != "" {
+		if strings.TrimSpace(prompt) == "" {
+			prompt = strings.TrimSpace(b)
+		} else {
+			prompt += "\n\n" + strings.TrimSpace(b)
+		}
+		paths = append(paths, p)
 	}
-	cc.Messages = append([]communi.Message(nil), msgs...)
-}
-
-func (cc *ContextController) ClearMessages() {
-	cc.Messages = nil
-}
-
-// ContextOptions configures context trimming. Used by defaultTransformContext
-// and can be extended later (e.g. SummarizeFunc for summarizing dropped messages).
-type ContextOptions struct {
-	// MaxTurns is the maximum number of conversation turns to keep (each turn = one user message + assistant/tool replies). 0 = no limit.
-	MaxTurns int
-	// MaxEstimatedTokens is a soft cap on total estimated tokens (rough ~4 chars/token). 0 = disabled.
-	MaxEstimatedTokens int
-	// MinToolResultsToKeep is the minimum number of recent tool-result messages to always retain.
-	MinToolResultsToKeep int
-
-	// AutoCompactMinEstimatedTokens: when >0 and estimated tokens >= value, OR branch for auto LLM compact. 0 = ignore.
-	AutoCompactMinEstimatedTokens int
-	// AutoCompactMinUserTurns: when >0 and user message count >= value, OR branch for auto LLM compact. 0 = ignore.
-	AutoCompactMinUserTurns int
-	// AutoCompactCooldownStreams: require at least this many TrimMessage calls since last compact before auto again. 0 = no cooldown wait.
-	AutoCompactCooldownStreams int
-	// CompactExtraInstructions is appended to the compact rubric (optional).
-	CompactExtraInstructions string
+	return prompt, paths
 }
 
 func readFile(dir, name string) (content string, path string) {
@@ -235,28 +279,7 @@ func readFile(dir, name string) (content string, path string) {
 	return string(b), path
 }
 
-// applyDir reads SYSTEM.md (replaces), AGENTS.md and APPEND_SYSTEM.md (append) from dir.
-func (cc *ContextController) applyDir(dir string) {
-	// SYSTEM.md: replace
-	if b, p := readFile(dir, "SYSTEM.md"); b != "" {
-		cc.Prompt = strings.TrimSpace(b)
-		cc.Paths = append(cc.Paths, p)
-	}
-	// AGENTS.md: append
-	if b, p := readFile(dir, "AGENTS.md"); b != "" {
-		cc.Prompt = cc.Prompt + "\n\n" + strings.TrimSpace(b)
-		cc.Paths = append(cc.Paths, p)
-	}
-	// APPEND_SYSTEM.md: append
-	if b, p := readFile(dir, "APPEND_SYSTEM.md"); b != "" {
-		cc.Prompt = cc.Prompt + "\n\n" + strings.TrimSpace(b)
-		cc.Paths = append(cc.Paths, p)
-	}
-}
-
-// dirsFromRootToCwd returns directories from filesystem root toward workDir
-// (e.g. ["/", "/home", "/home/user", "/home/user/proj"] so workDir wins when we apply in order).
-func (cc *ContextController) dirsFromRootToCwd(workDir string) []string {
+func dirsFromRootToCwd(workDir string) []string {
 	abs, err := filepath.Abs(workDir)
 	if err != nil || abs == "" {
 		return nil
@@ -271,13 +294,133 @@ func (cc *ContextController) dirsFromRootToCwd(workDir string) []string {
 		}
 		abs = parent
 	}
-	// parts is [workDir, parent, ..., root]; reverse to get root ... workDir
 	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
 		parts[i], parts[j] = parts[j], parts[i]
 	}
 	return parts
 }
 
-func (cc *ContextController) AppendSystemPrompt(prompt string) {
-	cc.Prompt = cc.Prompt + prompt
+func splitLeadingSystem(msgs []communi.Message) (prefix []communi.Message, body []communi.Message) {
+	i := 0
+	for i < len(msgs) && msgs[i].Role == keys.AgentRoleSystem {
+		i++
+	}
+	return append([]communi.Message(nil), msgs[:i]...), append([]communi.Message(nil), msgs[i:]...)
+}
+
+func segmentTurnsByUser(body []communi.Message) [][]communi.Message {
+	if len(body) == 0 {
+		return nil
+	}
+	var idx []int
+	for i := range body {
+		if body[i].Role == keys.AgentRoleUser {
+			idx = append(idx, i)
+		}
+	}
+	if len(idx) == 0 {
+		return [][]communi.Message{append([]communi.Message(nil), body...)}
+	}
+	var turns [][]communi.Message
+	for t := range idx {
+		start := idx[t]
+		end := len(body)
+		if t+1 < len(idx) {
+			end = idx[t+1]
+		}
+		turns = append(turns, append([]communi.Message(nil), body[start:end]...))
+	}
+	return turns
+}
+
+func ensureMinToolResults(kept [][]communi.Message, allTurns [][]communi.Message, min int) [][]communi.Message {
+	if min <= 0 {
+		return kept
+	}
+	if len(kept) >= len(allTurns) {
+		return kept
+	}
+	start := len(allTurns) - len(kept)
+	if start < 0 {
+		start = 0
+	}
+	for start > 0 && countToolMessages(concatTurns(allTurns[start:])) < min {
+		start--
+	}
+	return allTurns[start:]
+}
+
+func countToolMessages(msgs []communi.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == keys.AgentRoleTool {
+			n++
+		}
+	}
+	return n
+}
+
+func concatTurns(turns [][]communi.Message) []communi.Message {
+	var out []communi.Message
+	for _, t := range turns {
+		out = append(out, t...)
+	}
+	return out
+}
+
+func trimByTokenBudget(prefix, body []communi.Message, maxTok int) []communi.Message {
+	if maxTok <= 0 {
+		return body
+	}
+	turns := segmentTurnsByUser(body)
+	if len(turns) == 0 {
+		return body
+	}
+	kept := turns
+	for len(kept) > 1 && estimateTotalTokens(prefix)+estimateTotalTokens(concatTurns(kept)) > maxTok {
+		kept = kept[1:]
+	}
+	return concatTurns(kept)
+}
+
+func estimateTotalTokens(msgs []communi.Message) int {
+	t := 0
+	for _, m := range msgs {
+		t += estimateMessageTokens(m)
+	}
+	return t
+}
+
+func estimateMessageTokens(m communi.Message) int {
+	chars := len(m.Thinking)
+	chars += len(m.ContentBlocksToText())
+	if m.ToolCall != nil {
+		if b, err := json.Marshal(m.ToolCall); err == nil {
+			chars += len(b)
+		}
+	}
+	for _, tc := range m.ToolCalls {
+		if b, err := json.Marshal(tc); err == nil {
+			chars += len(b)
+		}
+	}
+	if m.ToolResult != nil {
+		if b, err := json.Marshal(m.ToolResult); err == nil {
+			chars += len(b)
+		}
+	}
+	if chars == 0 {
+		return 1
+	}
+	return (chars + 3) / 4
+}
+
+func countUserMessages(msgs []communi.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == keys.AgentRoleUser {
+			n++
+		}
+	}
+	return n
 }

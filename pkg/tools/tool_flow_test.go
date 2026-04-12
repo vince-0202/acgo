@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 type flowStateTool struct {
@@ -29,7 +29,7 @@ func (t *flowStateTool) JSONSchema() map[string]any {
 		"required": []string{"action"},
 	}
 }
-func (t *flowStateTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *flowStateTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var req struct {
 		Action string `json:"action"`
 		Value  string `json:"value"`
@@ -56,29 +56,30 @@ func (t *flowFailTool) Description() string { return "always fails" }
 func (t *flowFailTool) JSONSchema() map[string]any {
 	return map[string]any{"type": "object"}
 }
-func (t *flowFailTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *flowFailTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	return communi.ErrorToolCallResult(toolCallID, fmt.Errorf("forced failure"))
+}
+
+func newToolFlowDispatcher(tools ...agent.Tool) agent.ToolDispatcher {
+	agent := agent.New(agent.Options{ID: "test-agent", Tools: tools})
+	return agent.ToolManager().(agent.ToolDispatcher)
 }
 
 func TestToolFlow_SequentialSteps(t *testing.T) {
 	state := ""
-	tc := harness.NewToolController("test-agent", nil, nil, nil,
+	dispatcher := newToolFlowDispatcher(
 		NewToolFlowTool(),
 		&flowStateTool{state: &state},
 	)
+	tool := NewToolFlowTool()
+	ctx := agent.ContextWithToolDispatcher(context.Background(), dispatcher)
 	args := []byte(`{
 		"steps":[
 			{"id":"s1","tool":"flow_state","args":{"action":"set","value":"abc"}},
 			{"id":"s2","tool":"flow_state","args":{"action":"get"}}
 		]
 	}`)
-	res, err := tc.ExecuteByName(context.Background(), "flow-call", "tool_flow", args, harness.ExecuteToolOptions{
-		AppendTranscript: false,
-		EmitEvents:       false,
-	})
-	if err != nil {
-		t.Fatalf("tool_flow execute error: %v", err)
-	}
+	res := tool.Execute(ctx, "flow-call", args, nil)
 	if res.IsError() {
 		t.Fatalf("tool_flow result error: %v", res.Error)
 	}
@@ -105,24 +106,19 @@ func TestToolFlow_SequentialSteps(t *testing.T) {
 
 func TestToolFlow_StopOnError(t *testing.T) {
 	state := ""
-	tc := harness.NewToolController("test-agent", nil, nil, nil,
+	dispatcher := newToolFlowDispatcher(
 		NewToolFlowTool(),
 		&flowStateTool{state: &state},
 		&flowFailTool{},
 	)
+	ctx := agent.ContextWithToolDispatcher(context.Background(), dispatcher)
 	args := []byte(`{
 		"steps":[
 			{"tool":"flow_fail","args":{}},
 			{"tool":"flow_state","args":{"action":"set","value":"should-not-run"}}
 		]
 	}`)
-	res, err := tc.ExecuteByName(context.Background(), "flow-call", "tool_flow", args, harness.ExecuteToolOptions{
-		AppendTranscript: false,
-		EmitEvents:       false,
-	})
-	if err != nil {
-		t.Fatalf("tool_flow should return JSON report, not a top-level error: %v", err)
-	}
+	res := NewToolFlowTool().Execute(ctx, "flow-call", args, nil)
 	if res.IsError() {
 		t.Fatalf("unexpected tool_flow error result: %v", res.Error)
 	}
@@ -149,13 +145,9 @@ func TestToolFlow_StopOnError(t *testing.T) {
 	}
 }
 
-func TestExecuteByName_NoTranscriptContextRequiredWhenDisabled(t *testing.T) {
-	tc := harness.NewToolController("test-agent", nil, nil, nil, &flowFailTool{})
-	_, err := tc.ExecuteByName(context.Background(), "call", "flow_fail", []byte(`{}`), harness.ExecuteToolOptions{
-		AppendTranscript: false,
-		EmitEvents:       false,
-	})
-	if err == nil {
+func TestToolFlow_RequiresDispatcher(t *testing.T) {
+	res := NewToolFlowTool().Execute(context.Background(), "call", []byte(`{"steps":[{"tool":"flow_fail"}]}`), nil)
+	if !res.IsError() {
 		t.Fatal("expected tool error")
 	}
 }

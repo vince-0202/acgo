@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/runtime"
 	"strings"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 type cronDeleteTool struct{}
@@ -33,7 +33,7 @@ func (t *cronDeleteTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *cronDeleteTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *cronDeleteTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	var params struct {
 		ID string `json:"id"`
 	}
@@ -50,6 +50,6 @@ func (t *cronDeleteTool) Execute(ctx context.Context, toolCallID string, args js
 	return communi.NewToolCallResult(toolCallID, "deleted cron task "+id)
 }
 
-func NewCronDeleteTool() harness.Tool {
+func NewCronDeleteTool() agent.Tool {
 	return &cronDeleteTool{}
 }

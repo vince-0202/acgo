@@ -12,7 +12,6 @@ import (
 )
 
 var (
-	errMessageRouteDenied = errors.New("message route denied")
 	errMessageTargetEmpty = errors.New("message target is empty")
 )
 
@@ -70,8 +69,8 @@ func (b *messageBus) Send(msg MessageEnvelope) (MessageEnvelope, error) {
 	if msg.CreatedAt.IsZero() {
 		msg.CreatedAt = time.Now()
 	}
-
 	stored := msg.clone()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.inbox[stored.ToSubID] = append(b.inbox[stored.ToSubID], stored)
@@ -89,6 +88,7 @@ func (b *messageBus) Pull(toSubID string, limit int, correlationID string) []Mes
 	if limit < 0 {
 		limit = 0
 	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	all := b.inbox[toSubID]
@@ -96,11 +96,11 @@ func (b *messageBus) Pull(toSubID string, limit int, correlationID string) []Mes
 		return nil
 	}
 	out := make([]MessageEnvelope, 0, len(all))
-	for _, m := range all {
-		if correlationID != "" && m.CorrelationID != correlationID {
+	for _, message := range all {
+		if correlationID != "" && message.CorrelationID != correlationID {
 			continue
 		}
-		out = append(out, m.clone())
+		out = append(out, message.clone())
 		if limit > 0 && len(out) >= limit {
 			break
 		}
@@ -113,6 +113,7 @@ func (b *messageBus) Ack(messageID string) (MessageEnvelope, error) {
 	if messageID == "" {
 		return MessageEnvelope{}, fmt.Errorf("message_id is required")
 	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	msg, ok := b.byID[messageID]
@@ -147,35 +148,15 @@ func (b *messageBus) ListByCorrelation(correlationID string) []MessageEnvelope {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	out := make([]MessageEnvelope, 0)
-	for _, m := range b.history {
-		if m.CorrelationID == correlationID {
-			out = append(out, m.clone())
+	for _, message := range b.history {
+		if message.CorrelationID == correlationID {
+			out = append(out, message.clone())
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
-	return out
-}
-
-func (b *messageBus) Recent(limit int) []MessageEnvelope {
-	if limit <= 0 {
-		return nil
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	n := len(b.history)
-	if n == 0 {
-		return nil
-	}
-	if limit > n {
-		limit = n
-	}
-	start := n - limit
-	out := make([]MessageEnvelope, 0, limit)
-	for i := start; i < n; i++ {
-		out = append(out, b.history[i].clone())
-	}
 	return out
 }

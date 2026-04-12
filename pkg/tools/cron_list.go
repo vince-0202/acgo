@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/vince-0202/acgo/pkg/agent"
 	"github.com/vince-0202/acgo/pkg/runtime"
 	"strings"
 
 	"github.com/vince-0202/acgo/pkg/communi"
-	"github.com/vince-0202/acgo/pkg/harness"
 )
 
 type cronListTool struct{}
@@ -27,7 +27,7 @@ func (t *cronListTool) JSONSchema() map[string]any {
 	}
 }
 
-func (t *cronListTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update harness.ToolUpdateFunc) communi.ToolCallResult {
+func (t *cronListTool) Execute(ctx context.Context, toolCallID string, args json.RawMessage, update agent.ToolUpdateFunc) communi.ToolCallResult {
 	tasks := runtime.DefaultCronManager.List()
 	if len(tasks) == 0 {
 		return communi.NewToolCallResult(toolCallID, "no cron tasks")
@@ -50,6 +50,6 @@ func (t *cronListTool) Execute(ctx context.Context, toolCallID string, args json
 	return communi.NewToolCallResult(toolCallID, strings.TrimSpace(b.String()))
 }
 
-func NewCronListTool() harness.Tool {
+func NewCronListTool() agent.Tool {
 	return &cronListTool{}
 }
