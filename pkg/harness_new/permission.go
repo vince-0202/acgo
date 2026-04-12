@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/vince-0202/acgo/pkg/agent_new"
+	"github.com/vince-0202/acgo/pkg/communi"
 )
 
 type PermissionMode string
@@ -74,6 +77,40 @@ func NewPermissionController(mode PermissionMode, rules []PermissionRule, hook P
 		rules:       copied,
 		confirmHook: hook,
 	}
+}
+
+func (pc *PermissionController) Name() string {
+	return "permission"
+}
+
+func (pc *PermissionController) Clone() *PermissionController {
+	if pc == nil {
+		return nil
+	}
+	return NewPermissionController(pc.Mode(), pc.Rules(), pc.GetConfirmHook())
+}
+
+func (pc *PermissionController) Install(agent agent_new.AgentRuntime) (func(), error) {
+	uninstall := agent.ToolManager().RegisterMiddleware(func(ctx context.Context, req agent_new.ToolExecutionRequest, next agent_new.ToolExecutionHandler) (communi.ToolCallResult, error) {
+		toolArgs := strings.TrimSpace(string(req.Args))
+		workDir := agent.ContextManager().ToolWorkingDirectory()
+		_, err := pc.Check(ctx, PermissionRequest{
+			Action:   "tool.execute",
+			Resource: "tool:" + req.Tool.Name(),
+			Metadata: map[string]any{
+				"tool_call_id": req.ToolCall.ID,
+				"tool_name":    req.Tool.Name(),
+				"tool_args":    toolArgs,
+				"workdir":      workDir,
+			},
+		})
+		if err != nil {
+			res := communi.ErrorToolCallResult(req.ToolCall.ID, err)
+			return res, err
+		}
+		return next(ctx, req)
+	})
+	return uninstall, nil
 }
 
 func (pc *PermissionController) SetConfirmHook(hook PermissionConfirmHook) {

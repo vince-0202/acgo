@@ -1,0 +1,5 @@
+./commands.go
+./model.go
+./stream.go
+./update.go
+./view.go

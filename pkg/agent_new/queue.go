@@ -16,11 +16,15 @@ type queueManager struct {
 	FollowUpQueue []communi.Message
 }
 
-func (qm *queueManager) clear() {
+func (qm *queueManager) Clear() {
 	qm.queueMu.Lock()
 	qm.SteeringQueue = nil
 	qm.FollowUpQueue = nil
 	qm.queueMu.Unlock()
+}
+
+func (qm *queueManager) clear() {
+	qm.Clear()
 }
 
 func (qm *queueManager) EnqueueSteering(msg communi.Message) {

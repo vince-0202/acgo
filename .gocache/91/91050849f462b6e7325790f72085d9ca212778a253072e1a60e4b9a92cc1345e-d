@@ -1,0 +1,16 @@
+./bash.go
+./cron_create.go
+./cron_delete.go
+./cron_list.go
+./edit.go
+./git.go
+./git_worktree.go
+./grep.go
+./list.go
+./memory_recall.go
+./rag.go
+./read.go
+./tool_flow.go
+./web_fetch.go
+./web_search.go
+./write.go

@@ -13,18 +13,30 @@ type turnManager struct {
 	lastTurnError *errors.AgentError
 }
 
-func (tm *turnManager) run(ctx context.Context, agent *Agent, initialMsg *communi.Message) {
+func (tm *turnManager) reset() {
+	if tm == nil {
+		return
+	}
+	tm.roundNumber = 0
+	tm.lastTurnError = nil
+}
+
+func (tm *turnManager) startAgentTurn(ctx context.Context, agent *Agent, initialMsg *communi.Message) {
 	for {
+		turnMsg := initialMsg
+		if !tm.IsFirstTurn() {
+			turnMsg = agent.queueManager.DrainOneFromQueues()
+		}
+		if turnMsg == nil {
+			break
+		}
 		lastTurn := newTurn(agent)
 		agent.emit(NewEvent(
 			WithEventType(EventTurnStart),
 			WithEventAgent(agent),
 			WithEventTurnId(lastTurn.id),
 		))
-		if !tm.IsFirstTurn() {
-			initialMsg = agent.queueManager.DrainOneFromQueues()
-		}
-		lastTurn.run(ctx, initialMsg)
+		lastTurn.run(ctx, turnMsg)
 		if lastTurn.err != nil {
 			tm.lastTurnError = lastTurn.err
 			break
@@ -50,16 +62,16 @@ type turn struct {
 	err   *errors.AgentError
 }
 
-func (t *turn) run(ctx context.Context, turnMsg *communi.Message) {
+func (t *turn) run(ctx context.Context, turnMsg *communi.Message) *errors.AgentError {
 	if turnMsg == nil {
-		return
+		return nil
 	}
 
 	t.agent.emitUserMessage(t.id, turnMsg)
 	if lastErr := t.runLLMTurnsUntilDone(ctx); lastErr != nil {
-		t.err = errors.WrapError(lastErr)
-		return
+		return errors.WrapError(lastErr)
 	}
+	return nil
 }
 
 // runLLMTurnsUntilDone runs stream turns and tool execution until no more tool calls or an error.
@@ -94,6 +106,11 @@ func (t *turn) runOneStream(ctx context.Context) (err error, hasToolCalls bool) 
 		ReasoningEffort: t.agent.state.ThinkingLevel,
 	}
 	llmMessages := t.agent.context.Messages
+	t.agent.emit(NewEvent(
+		WithEventType(EventBeforeLLMCall),
+		WithEventAgent(t.agent),
+		WithEventTurnId(t.id),
+	))
 
 	events, streamErr := t.agent.provider.Stream(ctx, t.agent.model, llmMessages, opts)
 	if streamErr != nil {
@@ -134,6 +151,14 @@ func (t *turn) runOneStream(ctx context.Context) (err error, hasToolCalls bool) 
 			t.agent.state.LastUsage = nil
 		}
 	}
+	t.agent.emit(NewEvent(
+		WithEventType(EventAfterLLMCall),
+		WithEventAgent(t.agent),
+		WithEventTurnId(t.id),
+		WithEventMessage(&assistant),
+		WithEventLLMEvent(lastDone),
+		WithEventError(t.err),
+	))
 	t.agent.emit(NewEvent(
 		WithEventType(EventMessageEnd),
 		WithEventAgent(t.agent),

@@ -1,0 +1,3 @@
+./cancelreader.go
+./cancelreader_bsd.go
+./cancelreader_select.go

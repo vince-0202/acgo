@@ -13,12 +13,16 @@ const (
 	EventAgentEnd            EventType = "agent_end"
 	EventTurnStart           EventType = "turn_start"
 	EventTurnEnd             EventType = "turn_end"
+	EventBeforeLLMCall       EventType = "before_llm_call"
+	EventAfterLLMCall        EventType = "after_llm_call"
 	EventMessageStart        EventType = "message_start"
 	EventMessageUpdate       EventType = "message_update"
 	EventMessageEnd          EventType = "message_end"
+	EventBeforeToolExecution EventType = "before_tool_execution"
 	EventToolExecutionStart  EventType = "tool_execution_start"
 	EventToolExecutionUpdate EventType = "tool_execution_update"
 	EventToolExecutionEnd    EventType = "tool_execution_end"
+	EventAfterToolExecution  EventType = "after_tool_execution"
 )
 
 func NewEvent(opts ...EventOption) Event {

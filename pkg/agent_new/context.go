@@ -3,6 +3,9 @@ package agent_new
 import (
 	"context"
 	"github.com/vince-0202/acgo/pkg/communi"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 const defaultSystemPrompt = "You are a helpful coding assistant.Your answer needs to be accurate and concise."
@@ -21,6 +24,114 @@ type Context struct {
 	projectRoot string
 	Paths       []string // File paths that were read (for logging/debug)
 	Prompt      string   // Final merged system prompt
+}
+
+func (c *Context) WorkDir() string {
+	if c == nil {
+		return ""
+	}
+	return c.workDir
+}
+
+func (c *Context) ProjectRoot() string {
+	if c == nil {
+		return ""
+	}
+	return c.projectRoot
+}
+
+func (c *Context) ToolWorkingDirectory() string {
+	if c == nil {
+		return ""
+	}
+	if s := strings.TrimSpace(c.projectRoot); s != "" {
+		return s
+	}
+	abs, err := filepath.Abs(c.workDir)
+	if err != nil {
+		return c.workDir
+	}
+	return abs
+}
+
+func (c *Context) SystemPrompt() string {
+	if c == nil {
+		return ""
+	}
+	return c.Prompt
+}
+
+func (c *Context) ReplacePrompt(prompt string) {
+	if c == nil {
+		return
+	}
+	c.Prompt = prompt
+}
+
+func (c *Context) AppendPrompt(prompt string) {
+	if c == nil || prompt == "" {
+		return
+	}
+	c.Prompt += prompt
+}
+
+func (c *Context) ContextOptions() *ContextOptions {
+	if c == nil {
+		return nil
+	}
+	if c.Options == nil {
+		c.Options = &ContextOptions{}
+	}
+	return c.Options
+}
+
+func (c *Context) MessageSnapshot() []communi.Message {
+	if c == nil || c.Messages == nil {
+		return nil
+	}
+	return append([]communi.Message(nil), c.Messages...)
+}
+
+func (c *Context) LoadedPaths() []string {
+	if c == nil || c.Paths == nil {
+		return nil
+	}
+	return append([]string(nil), c.Paths...)
+}
+
+func (c *Context) SetLoadedPaths(paths []string) {
+	if c == nil {
+		return
+	}
+	if paths == nil {
+		c.Paths = nil
+		return
+	}
+	c.Paths = append([]string(nil), paths...)
+}
+
+func (c *Context) SetProjectRoot(dir string) error {
+	if c == nil {
+		return nil
+	}
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		c.projectRoot = ""
+		return nil
+	}
+	abs, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return err
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return os.ErrInvalid
+	}
+	c.projectRoot = abs
+	return nil
 }
 
 func (c *Context) ClearMessages() {

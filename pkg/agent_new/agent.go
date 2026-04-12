@@ -2,12 +2,13 @@ package agent_new
 
 import (
 	"context"
+	"strings"
+
 	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/errors"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/llm"
 	"github.com/vince-0202/acgo/pkg/utils"
-	"strings"
 )
 
 // Agent coordinates LLM calls, tools and state updates.
@@ -25,6 +26,13 @@ type Agent struct {
 	currentCancel   context.CancelFunc
 }
 
+func (a *Agent) ID() string {
+	if a == nil {
+		return ""
+	}
+	return a.id
+}
+
 // Prompt sends a new user message and runs one or more LLM turns,
 // executing tools in between turns when requested by the model.
 // When the current turn ends (no more tool calls), queued steering and follow-up
@@ -35,17 +43,21 @@ func (a *Agent) Prompt(ctx context.Context, content string) error {
 }
 
 func (a *Agent) promptWithInitialMessage(ctx context.Context, initialMsg communi.Message) error {
+	a.turnManager.reset()
 	a.emit(NewEvent(
 		WithEventType(EventAgentStart),
 		WithEventAgent(a),
 	))
 	a.ensureSystemPromptMessage()
-	a.turnManager.run(ctx, a, &initialMsg)
+	a.turnManager.startAgentTurn(ctx, a, &initialMsg)
 	a.emit(NewEvent(
 		WithEventType(EventAgentEnd),
 		WithEventAgent(a),
 		WithEventError(a.turnManager.lastTurnError),
 	))
+	if a.turnManager.lastTurnError == nil {
+		return nil
+	}
 	return a.turnManager.lastTurnError
 }
 
@@ -63,6 +75,10 @@ func (a *Agent) ensureSystemPromptMessage() {
 
 func (a *Agent) emit(e Event) {
 	a.listenerManager.emit(e, a.Abort)
+}
+
+func (a *Agent) Emit(e Event) {
+	a.emit(e)
 }
 
 // Abort cancels the current LLM call if one is active.
@@ -98,12 +114,44 @@ func (a *Agent) Context() *Context {
 	return a.context
 }
 
+func (a *Agent) ContextManager() ContextRuntime {
+	return a.context
+}
+
 func (a *Agent) Model() llm.Model {
 	return a.model
 }
 
+// SetModel updates the model used for subsequent LLM calls.
+func (a *Agent) SetModel(model llm.Model) {
+	if a == nil {
+		return
+	}
+	a.model = model
+}
+
 func (a *Agent) Provider() llm.Provider {
 	return a.provider
+}
+
+func (a *Agent) State() State {
+	return a.state
+}
+
+func (a *Agent) Subscribe(l Listener) func() {
+	return a.listenerManager.AddListener(l)
+}
+
+func (a *Agent) ToolManager() ToolRuntime {
+	return a.toolManager
+}
+
+func (a *Agent) QueueManager() QueueRuntime {
+	return a.queueManager
+}
+
+func (a *Agent) SubAgentManager() SubAgentRuntime {
+	return a.subAgentManager
 }
 
 // Reset clears messages, error state, and queues.
@@ -111,7 +159,7 @@ func (a *Agent) Reset() {
 	a.context.ClearMessages()
 	a.toolManager.ClearPendingTool()
 	a.state.clear()
-	a.queueManager.clear()
+	a.queueManager.Clear()
 }
 
 // EnqueueSteering adds a message to the steering queue. When the agent is busy,

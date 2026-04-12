@@ -42,9 +42,64 @@ type ToolUpdate struct {
 	Metadata map[string]any // arbitrary metadata
 }
 
+type ToolExecutionRequest struct {
+	Agent    *Agent
+	TurnID   string
+	Tool     Tool
+	ToolCall communi.ToolCallRequest
+	Args     json.RawMessage
+}
+
+type ToolExecutionHandler func(ctx context.Context, req ToolExecutionRequest) (communi.ToolCallResult, error)
+
+type ToolExecutionMiddleware func(ctx context.Context, req ToolExecutionRequest, next ToolExecutionHandler) (communi.ToolCallResult, error)
+
 type toolsManager struct {
 	tools            map[string]Tool
 	pendingToolCalls []communi.ToolCallRequest
+	middlewares      []ToolExecutionMiddleware
+}
+
+func (tm *toolsManager) RegisterTool(tool Tool) {
+	if tm == nil || tool == nil {
+		return
+	}
+	if tm.tools == nil {
+		tm.tools = make(map[string]Tool)
+	}
+	tm.tools[tool.Name()] = tool
+}
+
+func (tm *toolsManager) UnregisterTool(name string) {
+	if tm == nil || tm.tools == nil {
+		return
+	}
+	delete(tm.tools, name)
+}
+
+func (tm *toolsManager) RegisteredTools() []Tool {
+	if tm == nil || len(tm.tools) == 0 {
+		return nil
+	}
+	out := make([]Tool, 0, len(tm.tools))
+	for _, tool := range tm.tools {
+		out = append(out, tool)
+	}
+	return out
+}
+
+func (tm *toolsManager) RegisterMiddleware(mw ToolExecutionMiddleware) func() {
+	if tm == nil || mw == nil {
+		return func() {}
+	}
+	tm.middlewares = append(tm.middlewares, mw)
+	idx := len(tm.middlewares) - 1
+	return func() {
+		if idx < 0 || idx >= len(tm.middlewares) || tm.middlewares[idx] == nil {
+			return
+		}
+		tm.middlewares[idx] = nil
+	}
 }
 
 func (tm *toolsManager) ClearPendingTool() {
@@ -160,9 +215,52 @@ func (te *ToolExecutor) ExecuteByName(ctx context.Context, opts ExecuteToolOptio
 		return res, err
 	}
 
-	res := te.tool.Execute(ctx, te.caller.ID, toolArgs, opts.Update)
+	req := ToolExecutionRequest{
+		Agent:    te.agent,
+		TurnID:   te.turn.id,
+		Tool:     te.tool,
+		ToolCall: toolCall,
+		Args:     toolArgs,
+	}
+	if te.agent != nil {
+		te.agent.emit(NewEvent(
+			WithEventType(EventBeforeToolExecution),
+			WithEventAgent(te.agent),
+			WithEventTurnId(te.turn.id),
+			WithEventTooCallId(te.caller.ID),
+			WithEventTool(te.tool),
+		))
+	}
+	executorManager := te.agent.toolManager
+	if executorManager == nil {
+		res := communi.ErrorToolCallResult(te.caller.ID, fmt.Errorf("tool manager is nil"))
+		finalizeToolExecution(te.agent, te.tool, toolCall, toolArgs, res, opts)
+		return res, res.Error
+	}
+	res, err := executorManager.executeWithMiddleware(ctx, req, func(ctx context.Context, req ToolExecutionRequest) (communi.ToolCallResult, error) {
+		result := te.tool.Execute(ctx, te.caller.ID, toolArgs, opts.Update)
+		return result, result.Error
+	})
 	finalizeToolExecution(te.agent, te.tool, toolCall, toolArgs, res, opts)
-	return res, res.Error
+	return res, err
+}
+
+func (tm *toolsManager) executeWithMiddleware(ctx context.Context, req ToolExecutionRequest, core ToolExecutionHandler) (communi.ToolCallResult, error) {
+	if tm == nil {
+		return core(ctx, req)
+	}
+	handler := core
+	for i := len(tm.middlewares) - 1; i >= 0; i-- {
+		mw := tm.middlewares[i]
+		if mw == nil {
+			continue
+		}
+		next := handler
+		handler = func(ctx context.Context, req ToolExecutionRequest) (communi.ToolCallResult, error) {
+			return mw(ctx, req, next)
+		}
+	}
+	return handler(ctx, req)
 }
 
 func finalizeToolExecution(agent *Agent, tool Tool, call communi.ToolCallRequest, args json.RawMessage, result communi.ToolCallResult, opts ExecuteToolOptions) {
@@ -175,6 +273,15 @@ func finalizeToolExecution(agent *Agent, tool Tool, call communi.ToolCallRequest
 			WithEventType(EventToolExecutionEnd),
 			WithEventAgent(agent),
 			WithEventTool(tool),
+			WithEventTooCallId(call.ID),
+			WithEventMessage(&msg),
+			WithEventError(errors.WrapError(errVal)),
+		))
+		agent.emit(NewEvent(
+			WithEventType(EventAfterToolExecution),
+			WithEventAgent(agent),
+			WithEventTool(tool),
+			WithEventTooCallId(call.ID),
 			WithEventMessage(&msg),
 			WithEventError(errors.WrapError(errVal)),
 		))

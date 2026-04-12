@@ -3,10 +3,13 @@ package harness_new
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/vince-0202/acgo/pkg/agent_new"
 	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/keys"
-	"strings"
 )
 
 // TrimMode selects how TrimMessage behaves.
@@ -27,18 +30,55 @@ type TrimMessageOptions struct {
 }
 
 type ContextController struct {
-	agent   *agent_new.Agent
-	context *agent_new.Context
+	agent   agent_new.AgentRuntime
+	context agent_new.ContextRuntime
+
+	basePrompt        string
+	persistentAppends []string
 
 	streamsSinceLastCompact int
 	everCompacted           bool
 	transcriptPath          string
 }
 
+func NewContextController() *ContextController {
+	return &ContextController{}
+}
+
+func (cc *ContextController) Name() string {
+	return "context"
+}
+
+func (cc *ContextController) Install(agent agent_new.AgentRuntime) (func(), error) {
+	cc.agent = agent
+	cc.context = agent.ContextManager()
+	cc.basePrompt = cc.context.SystemPrompt()
+	cc.loadPromptFromDisk()
+	unsub := agent.Subscribe(func(event agent_new.Event, abort func()) {
+		switch event.Type {
+		case agent_new.EventAgentStart:
+			cc.loadPromptFromDisk()
+		case agent_new.EventBeforeLLMCall:
+			_ = cc.TrimMessage(context.Background(), nil)
+		}
+	})
+	return func() {
+		unsub()
+		cc.agent = nil
+		cc.context = nil
+	}, nil
+}
+
 // TrimMessage applies context reduction. Pass nil req for automatic mode: may run LLM compact when
 // ContextOptions triggers match and compact LLM is configured; otherwise deterministic trim only.
 func (cc *ContextController) TrimMessage(ctx context.Context, req *TrimMessageOptions) error {
-	opts := cc.context.Options
+	if cc == nil || cc.context == nil {
+		return nil
+	}
+	opts := cc.context.ContextOptions()
+	if opts == nil {
+		return nil
+	}
 
 	switch {
 	case req != nil && req.Mode == TrimModeDeterministic:
@@ -87,7 +127,7 @@ func (cc *ContextController) shouldAutoCompact(opts *agent_new.ContextOptions) b
 	if opts.AutoCompactMinEstimatedTokens <= 0 && opts.AutoCompactMinUserTurns <= 0 {
 		return false
 	}
-	prefix, body := splitLeadingSystem(cc.context.Messages)
+	prefix, body := splitLeadingSystem(cc.context.MessageSnapshot())
 	_ = prefix
 	tok := estimateTotalTokens(body)
 	userTurns := countUserMessages(body)
@@ -117,22 +157,23 @@ func (cc *ContextController) noteStreamAfterTrim(didCompact bool) {
 }
 
 func (cc *ContextController) applyDeterministicTrim(opts *agent_new.ContextOptions) {
-	if len(cc.context.Messages) == 0 {
+	msgs := cc.context.MessageSnapshot()
+	if len(msgs) == 0 {
 		return
 	}
 	if opts.MaxTurns <= 0 && opts.MaxEstimatedTokens <= 0 && opts.MinToolResultsToKeep <= 0 {
 		return
 	}
 
-	prefix, body := splitLeadingSystem(cc.context.Messages)
+	prefix, body := splitLeadingSystem(msgs)
 	if len(body) == 0 {
-		cc.context.Messages = prefix
+		cc.context.ReplaceMessages(prefix)
 		return
 	}
 
 	turns := segmentTurnsByUser(body)
 	if len(turns) == 0 {
-		cc.context.Messages = append(append([]communi.Message(nil), prefix...), body...)
+		cc.context.ReplaceMessages(append(append([]communi.Message(nil), prefix...), body...))
 		return
 	}
 
@@ -145,7 +186,118 @@ func (cc *ContextController) applyDeterministicTrim(opts *agent_new.ContextOptio
 	out := concatTurns(kept)
 	out = trimByTokenBudget(prefix, out, opts.MaxEstimatedTokens)
 
-	cc.context.Messages = append(append([]communi.Message(nil), prefix...), out...)
+	cc.context.ReplaceMessages(append(append([]communi.Message(nil), prefix...), out...))
+}
+
+func (cc *ContextController) loadPromptFromDisk() {
+	if cc == nil || cc.context == nil {
+		return
+	}
+	prompt := strings.TrimSpace(cc.basePrompt)
+	if prompt == "" {
+		prompt = strings.TrimSpace(cc.context.SystemPrompt())
+	}
+	var paths []string
+	root := cc.effectiveContextRoot()
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		absRoot = root
+	}
+	prompt, paths = cc.applyDir(prompt, paths, absRoot)
+	for _, dir := range dirsFromRootToCwd(absRoot) {
+		prompt, paths = cc.applyDir(prompt, paths, dir)
+	}
+	for _, extra := range cc.persistentAppends {
+		extra = strings.TrimSpace(extra)
+		if extra == "" {
+			continue
+		}
+		if strings.TrimSpace(prompt) == "" {
+			prompt = extra
+		} else {
+			prompt += "\n\n" + extra
+		}
+	}
+	cc.context.ReplacePrompt(prompt)
+	cc.context.SetLoadedPaths(paths)
+}
+
+func (cc *ContextController) AppendPersistentPrompt(prompt string) {
+	if cc == nil {
+		return
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return
+	}
+	cc.persistentAppends = append(cc.persistentAppends, prompt)
+	if cc.context != nil {
+		cc.loadPromptFromDisk()
+	}
+}
+
+func (cc *ContextController) effectiveContextRoot() string {
+	if cc == nil || cc.context == nil {
+		return "."
+	}
+	if s := strings.TrimSpace(cc.context.ProjectRoot()); s != "" {
+		return filepath.Clean(s)
+	}
+	return cc.context.WorkDir()
+}
+
+func (cc *ContextController) applyDir(prompt string, paths []string, dir string) (string, []string) {
+	if b, p := readFile(dir, "SYSTEM.md"); b != "" {
+		prompt = strings.TrimSpace(b)
+		paths = append(paths, p)
+	}
+	if b, p := readFile(dir, "AGENTS.md"); b != "" {
+		if strings.TrimSpace(prompt) == "" {
+			prompt = strings.TrimSpace(b)
+		} else {
+			prompt += "\n\n" + strings.TrimSpace(b)
+		}
+		paths = append(paths, p)
+	}
+	if b, p := readFile(dir, "APPEND_SYSTEM.md"); b != "" {
+		if strings.TrimSpace(prompt) == "" {
+			prompt = strings.TrimSpace(b)
+		} else {
+			prompt += "\n\n" + strings.TrimSpace(b)
+		}
+		paths = append(paths, p)
+	}
+	return prompt, paths
+}
+
+func readFile(dir, name string) (content string, path string) {
+	path = filepath.Join(dir, name)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	return string(b), path
+}
+
+func dirsFromRootToCwd(workDir string) []string {
+	abs, err := filepath.Abs(workDir)
+	if err != nil || abs == "" {
+		return nil
+	}
+	abs = filepath.Clean(abs)
+	var parts []string
+	for {
+		parts = append(parts, abs)
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			break
+		}
+		abs = parent
+	}
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return parts
 }
 
 func splitLeadingSystem(msgs []communi.Message) (prefix []communi.Message, body []communi.Message) {

@@ -69,7 +69,7 @@ func (cc *ContextController) compactWithLLM(ctx context.Context, req *TrimMessag
 	if !cc.hasCompactLLM() {
 		return fmt.Errorf("compact: LLM provider or model not configured")
 	}
-	prefix, body := splitLeadingSystem(cc.context.Messages)
+	prefix, body := splitLeadingSystem(cc.context.MessageSnapshot())
 	var msgs []communi.Message
 	msgs = append(msgs, communi.NewSystemMessageWithoutId(compactSystemAgentSDK))
 	msgs = append(msgs, communi.NewSystemMessageWithoutId(compactSystemSummarizer))
@@ -97,7 +97,7 @@ func (cc *ContextController) compactWithLLM(ctx context.Context, req *TrimMessag
 	processed := postProcessCompactOutput(text, tp)
 
 	sumMsg := communi.NewUserMessageWithoutId(processed)
-	cc.context.Messages = append(append([]communi.Message(nil), prefix...), sumMsg)
+	cc.context.ReplaceMessages(append(append([]communi.Message(nil), prefix...), sumMsg))
 	return nil
 }
 
