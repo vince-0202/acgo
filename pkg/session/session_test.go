@@ -3,6 +3,8 @@ package session
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/vince-0202/acgo/pkg/communi"
 )
 
 func TestNewSessionPath_and_List(t *testing.T) {
@@ -46,14 +48,14 @@ func TestCreate_AppendMessage_LoadAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := s.AppendMessage(Message{ID: "1", Role: "user", Content: "hi"}); err != nil {
+	if err := s.AppendMessage(communi.NewUserMessage("1", "hi")); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	all, err := s.LoadMessage()
-	if err != nil {
+	if err := s.LoadMessage(); err != nil {
 		t.Fatalf("LoadMessage: %v", err)
 	}
-	if len(all) != 1 || all[0].Content != "hi" {
+	all := s.Message
+	if len(all) != 1 || all[0].ContentBlocksToText() != "hi" {
 		t.Errorf("LoadMessage: %v", all)
 	}
 }

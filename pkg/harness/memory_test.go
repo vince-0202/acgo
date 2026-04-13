@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vince-0202/acgo/pkg/agent"
+	"github.com/vince-0202/acgo/pkg/memory"
 )
 
 type sleepMemoryWriter struct {
@@ -28,10 +29,10 @@ func TestMemoryControllerWriteDialogueFansOutInParallel(t *testing.T) {
 	w1 := &sleepMemoryWriter{delay: 120 * time.Millisecond}
 	w2 := &sleepMemoryWriter{delay: 120 * time.Millisecond}
 	mc := NewMemoryController(w1, w2)
-	mc.rememberUser("turn-1", "hello")
+	mc.recordUserText("turn-1", "hello")
 
 	start := time.Now()
-	mc.writeDialogue("turn-1", "world")
+	mc.flushDialogue("turn-1", "world")
 	elapsed := time.Since(start)
 
 	if w1.count.Load() != 1 || w2.count.Load() != 1 {
@@ -42,27 +43,9 @@ func TestMemoryControllerWriteDialogueFansOutInParallel(t *testing.T) {
 	}
 }
 
-func TestContextMemoryWriterAppendsSystemMemoryMessage(t *testing.T) {
-	ag := agent.New(agent.Options{ID: "ag-1", WorkDir: t.TempDir()})
-	writer := NewContextMemoryWriter()
-	writer.BindRuntime(ag)
-
-	if err := writer.WriteDialogue(context.Background(), "sess-1", "u", "a"); err != nil {
-		t.Fatalf("WriteDialogue error: %v", err)
-	}
-
-	msgs := ag.ContextManager().MessageSnapshot()
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(msgs))
-	}
-	if got := msgs[0].ContentBlocksToText(); !strings.Contains(got, "[Memory]") || !strings.Contains(got, "user: u") || !strings.Contains(got, "assistant: a") {
-		t.Fatalf("unexpected memory message: %q", got)
-	}
-}
-
 func TestFileMemoryWriterAppendsJSONL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory", "mem.jsonl")
-	writer := NewFileMemoryWriter(path)
+	writer := memory.NewFileMemoryWriter(path)
 
 	if err := writer.WriteDialogue(context.Background(), "sess-1", "u", "a"); err != nil {
 		t.Fatalf("WriteDialogue error: %v", err)
@@ -86,9 +69,9 @@ func TestFileMemoryWriterAppendsJSONL(t *testing.T) {
 	}
 }
 
-func TestMemoryControllerInstallsRecallPromptIntoSystemPrompt(t *testing.T) {
+func TestMemoryControllerDefaultDoesNotInstallRecallPrompt(t *testing.T) {
 	ag := agent.New(agent.Options{ID: "ag-1", WorkDir: t.TempDir()})
-	h := NewHarness(NewContextController(), NewMemoryController(NewContextMemoryWriter()))
+	h := NewHarness(NewContextController(), NewMemoryController())
 	if err := h.Attach(ag); err != nil {
 		t.Fatalf("Attach error: %v", err)
 	}
@@ -100,7 +83,33 @@ func TestMemoryControllerInstallsRecallPromptIntoSystemPrompt(t *testing.T) {
 	))
 
 	prompt := ag.ContextManager().SystemPrompt()
-	if !strings.Contains(prompt, "memory_recall") {
-		t.Fatalf("expected memory_recall instructions in prompt, got %q", prompt)
+	if strings.Contains(prompt, "memory_recall") {
+		t.Fatalf("did not expect memory_recall instructions by default, got %q", prompt)
+	}
+}
+
+func TestMemoryControllerUsesCallerDefaultTypesInPrompt(t *testing.T) {
+	ag := agent.New(agent.Options{ID: "ag-1", WorkDir: t.TempDir()})
+	caller := memory.NewFileMemoryCallerWithTypes(filepath.Join(t.TempDir(), "memory.jsonl"), []memory.MemoryType{memory.DialogueRaw})
+	h := NewHarness(
+		NewContextController(),
+		NewMemoryControllerWithOptions(MemoryControllerOptions{
+			Writers: []MemoryWriter{},
+			Caller:  caller,
+		}),
+	)
+	if err := h.Attach(ag); err != nil {
+		t.Fatalf("Attach error: %v", err)
+	}
+	defer h.Detach()
+
+	ag.Emit(agent.NewEvent(
+		agent.WithEventType(agent.EventAgentStart),
+		agent.WithEventAgent(ag),
+	))
+
+	prompt := ag.ContextManager().SystemPrompt()
+	if !strings.Contains(prompt, "memory_recall") || !strings.Contains(prompt, "dialogue_raw") {
+		t.Fatalf("expected default memory type in prompt, got %q", prompt)
 	}
 }

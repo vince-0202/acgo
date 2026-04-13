@@ -2,38 +2,40 @@ package harness
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/vince-0202/acgo/pkg/agent"
-	"github.com/vince-0202/acgo/pkg/communi"
 	"github.com/vince-0202/acgo/pkg/keys"
 	"github.com/vince-0202/acgo/pkg/memory"
 )
 
-type MemoryWriter interface {
-	WriteDialogue(ctx context.Context, sessionID string, userText string, assistantText string) error
-}
+type MemoryWriter = memory.MemoryWriter
 
-type MemoryWriterRuntimeAware interface {
-	BindRuntime(agent.AgentRuntime)
+type MemoryControllerOptions struct {
+	Writers []MemoryWriter
+	Caller  memory.MemoryCaller
 }
 
 type MemoryController struct {
 	writers []MemoryWriter
+	caller  memory.MemoryCaller
 	mu      sync.Mutex
 	pending map[string]string
 }
 
 func NewMemoryController(writers ...MemoryWriter) *MemoryController {
+	return NewMemoryControllerWithOptions(MemoryControllerOptions{
+		Writers: writers,
+	})
+}
+
+func NewMemoryControllerWithOptions(opts MemoryControllerOptions) *MemoryController {
 	return &MemoryController{
-		writers: append([]MemoryWriter(nil), writers...),
+		writers: append([]MemoryWriter(nil), opts.Writers...),
+		caller:  opts.Caller,
 		pending: make(map[string]string),
 	}
 }
@@ -43,68 +45,56 @@ func (mc *MemoryController) Name() string {
 }
 
 func (mc *MemoryController) Install(runtime agent.AgentRuntime) (func(), error) {
-	mc.loadWriters()
-	mc.bindRuntime(runtime)
-	mc.installRecallPrompt(runtime)
+	mc.syncRecallPrompt(runtime)
 	unsub := runtime.Subscribe(func(event agent.Event, abort func()) {
-		switch event.Type {
-		case agent.EventAgentStart:
-			mc.installRecallPrompt(runtime)
-			return
-		case agent.EventMessageEnd:
-			if event.Message == nil {
-				return
-			}
-		default:
-			return
-		}
-		turnID := strings.TrimSpace(event.TurnID)
-		if turnID == "" {
-			return
-		}
-		text := strings.TrimSpace(event.Message.ContentBlocksToText())
-		switch event.Message.Role {
-		case keys.AgentRoleUser:
-			mc.rememberUser(turnID, text)
-		case keys.AgentRoleAssistant:
-			mc.writeDialogue(turnID, text)
-		}
+		mc.handleEvent(runtime, event)
 	})
 	return func() {
 		unsub()
 	}, nil
 }
 
-func (mc *MemoryController) loadWriters() {
-	if mc == nil || len(mc.writers) > 0 {
+func (mc *MemoryController) handleEvent(runtime agent.AgentRuntime, event agent.Event) {
+	if mc == nil {
 		return
 	}
-	writer, err := NewVectorDBMemoryWriter()
-	if err != nil {
-		return
-	}
-	mc.writers = []MemoryWriter{writer}
-}
-
-func (mc *MemoryController) bindRuntime(runtime agent.AgentRuntime) {
-	if mc == nil || runtime == nil {
-		return
-	}
-	for _, writer := range mc.writers {
-		if aware, ok := writer.(MemoryWriterRuntimeAware); ok && aware != nil {
-			aware.BindRuntime(runtime)
-		}
+	switch event.Type {
+	case agent.EventAgentStart:
+		mc.syncRecallPrompt(runtime)
+	case agent.EventMessageEnd:
+		mc.handleMessageEnd(event)
 	}
 }
 
-func (mc *MemoryController) installRecallPrompt(runtime agent.AgentRuntime) {
+func (mc *MemoryController) syncRecallPrompt(runtime agent.AgentRuntime) {
 	if mc == nil || runtime == nil || runtime.ContextManager() == nil {
 		return
 	}
-	runtime.ContextManager().UpsertPersistentPrompt("memory_recall", memoryRecallSystemPrompt)
+	if mc.caller == nil {
+		runtime.ContextManager().RemovePersistentPrompt("memory_recall")
+		return
+	}
+	runtime.ContextManager().UpsertPersistentPrompt("memory_recall", mc.recallPrompt())
 }
 
-func (mc *MemoryController) rememberUser(turnID, text string) {
+func (mc *MemoryController) handleMessageEnd(event agent.Event) {
+	if mc == nil || event.Message == nil {
+		return
+	}
+	turnID := strings.TrimSpace(event.TurnID)
+	if turnID == "" {
+		return
+	}
+	text := strings.TrimSpace(event.Message.ContentBlocksToText())
+	switch event.Message.Role {
+	case keys.AgentRoleUser:
+		mc.recordUserText(turnID, text)
+	case keys.AgentRoleAssistant:
+		mc.flushDialogue(turnID, text)
+	}
+}
+
+func (mc *MemoryController) recordUserText(turnID, text string) {
 	if mc == nil {
 		return
 	}
@@ -113,7 +103,7 @@ func (mc *MemoryController) rememberUser(turnID, text string) {
 	mc.pending[turnID] = text
 }
 
-func (mc *MemoryController) writeDialogue(turnID, assistantText string) {
+func (mc *MemoryController) flushDialogue(turnID, assistantText string) {
 	if mc == nil {
 		return
 	}
@@ -151,131 +141,26 @@ func (mc *MemoryController) writeDialogue(turnID, assistantText string) {
 	_ = joined
 }
 
-type ContextMemoryWriter struct {
-	mu      sync.RWMutex
-	context agent.ContextRuntime
-}
-
-func NewContextMemoryWriter() *ContextMemoryWriter {
-	return &ContextMemoryWriter{}
-}
-
-func (w *ContextMemoryWriter) BindRuntime(runtime agent.AgentRuntime) {
-	if w == nil || runtime == nil {
-		return
+func (mc *MemoryController) recallPrompt() string {
+	types := []string{"dialogue_raw"}
+	if mc != nil && mc.caller != nil {
+		defaultTypes := mc.caller.DefaultMemoryTypes()
+		if len(defaultTypes) > 0 {
+			types = types[:0]
+			for _, mt := range defaultTypes {
+				if mt == "" {
+					continue
+				}
+				types = append(types, string(mt))
+			}
+		}
 	}
-	w.mu.Lock()
-	w.context = runtime.ContextManager()
-	w.mu.Unlock()
-}
-
-func (w *ContextMemoryWriter) WriteDialogue(_ context.Context, sessionID string, userText string, assistantText string) error {
-	if w == nil {
-		return nil
-	}
-	w.mu.RLock()
-	ctxRuntime := w.context
-	w.mu.RUnlock()
-	if ctxRuntime == nil {
-		return nil
-	}
-	text := formatMemoryEntry(userText, assistantText)
-	if text == "" {
-		return nil
-	}
-	msg := communi.NewSystemMessageWithoutId("[Memory]\n" + text)
-	msg.AppendMetadata("memory_writer", "context")
-	if sessionID != "" {
-		msg.AppendMetadata("session_id", sessionID)
-	}
-	ctxRuntime.AppendMessage(msg)
-	return nil
-}
-
-type FileMemoryWriter struct {
-	path string
-	mu   sync.Mutex
-}
-
-type fileMemoryRecord struct {
-	Timestamp     time.Time `json:"timestamp"`
-	SessionID     string    `json:"session_id,omitempty"`
-	UserText      string    `json:"user_text,omitempty"`
-	AssistantText string    `json:"assistant_text,omitempty"`
-}
-
-func NewFileMemoryWriter(path string) *FileMemoryWriter {
-	return &FileMemoryWriter{path: strings.TrimSpace(path)}
-}
-
-func (w *FileMemoryWriter) WriteDialogue(_ context.Context, sessionID string, userText string, assistantText string) error {
-	if w == nil || strings.TrimSpace(w.path) == "" {
-		return nil
-	}
-	record := fileMemoryRecord{
-		Timestamp:     time.Now().UTC(),
-		SessionID:     strings.TrimSpace(sessionID),
-		UserText:      strings.TrimSpace(userText),
-		AssistantText: strings.TrimSpace(assistantText),
-	}
-	line, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(w.path), 0o755); err != nil {
-		return err
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return err
-	}
-	return nil
-}
-
-type VectorDBMemoryWriter struct {
-	manager *memory.Manager
-}
-
-func NewVectorDBMemoryWriter() (*VectorDBMemoryWriter, error) {
-	mgr, err := memory.DefaultManager()
-	if err != nil {
-		return nil, err
-	}
-	return &VectorDBMemoryWriter{manager: mgr}, nil
-}
-
-func (w *VectorDBMemoryWriter) WriteDialogue(ctx context.Context, sessionID string, userText string, assistantText string) error {
-	if w == nil || w.manager == nil {
-		return nil
-	}
-	return w.manager.WriteDialogue(ctx, sessionID, userText, assistantText)
-}
-
-func formatMemoryEntry(userText, assistantText string) string {
-	userText = strings.TrimSpace(userText)
-	assistantText = strings.TrimSpace(assistantText)
-	switch {
-	case userText == "" && assistantText == "":
-		return ""
-	case userText == "":
-		return "assistant: " + assistantText
-	case assistantText == "":
-		return "user: " + userText
-	default:
-		return "user: " + userText + "\nassistant: " + assistantText
-	}
-}
-
-const memoryRecallSystemPrompt = `
+	return `
 Memory policy:
 - Use the memory_recall tool when the user asks about prior preferences, earlier decisions, long-running tasks, or historical context that may no longer be in the current conversation window.
 - Build concise search queries around stable entities such as names, goals, projects, constraints, and explicit decisions.
+- Prefer these memory types when you do not need to specify one explicitly: ` + strings.Join(types, ", ") + `.
 - Treat recalled memories as supporting context, not guaranteed truth. If a recalled item affects correctness, verify it against the current workspace or fresh tool results before relying on it.
 - If memory_recall returns nothing useful, continue normally instead of inventing past memories.
 `
+}

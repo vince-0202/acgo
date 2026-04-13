@@ -9,13 +9,6 @@ import (
 	"github.com/vince-0202/acgo/pkg/memory"
 )
 
-type dialogueRawTestHandler struct{}
-
-func (h *dialogueRawTestHandler) Type() memory.MemoryType { return memory.DialogueRaw }
-func (h *dialogueRawTestHandler) Build(userText string, assistantText string) (string, map[string]any, error) {
-	return "User: " + userText + "\nAssistant: " + assistantText, nil, nil
-}
-
 type fakeMemoryStore struct {
 	lastQuery   string
 	lastTopK    int
@@ -46,15 +39,13 @@ func (s *fakeMemoryStore) Search(_ context.Context, query string, topK int, filt
 
 func TestMemoryRecallTool_ParseAndFormat(t *testing.T) {
 	store := &fakeMemoryStore{}
-	mgr, err := memory.NewManager(store, []memory.MemoryTypeHandler{
-		&dialogueRawTestHandler{},
-	})
+	caller, err := memory.NewVectorStoreMemoryCallerWithStore(store, []memory.MemoryType{memory.DialogueRaw})
 	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+		t.Fatalf("NewVectorStoreMemoryCallerWithStore: %v", err)
 	}
-	tool := &memoryRecallTool{manager: mgr}
+	tool := &memoryRecallTool{caller: caller}
 
-	ctx := memory.WithSessionID(context.Background(), "sess-1")
+	ctx := context.Background()
 	args := json.RawMessage(`{"query":"q1","memory_types":["dialogue_raw"],"top_k":3}`)
 	res := tool.Execute(ctx, "call-1", args, nil)
 	if res.IsError() {

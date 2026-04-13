@@ -61,8 +61,8 @@ func (t *flowFailTool) Execute(ctx context.Context, toolCallID string, args json
 }
 
 func newToolFlowDispatcher(tools ...agent.Tool) agent.ToolDispatcher {
-	agent := agent.New(agent.Options{ID: "test-agent", Tools: tools})
-	return agent.ToolManager().(agent.ToolDispatcher)
+	runtime := agent.New(agent.Options{ID: "test-agent", Tools: tools})
+	return runtime.ToolManager().(agent.ToolDispatcher)
 }
 
 func TestToolFlow_SequentialSteps(t *testing.T) {

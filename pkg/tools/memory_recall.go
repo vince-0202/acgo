@@ -12,7 +12,7 @@ import (
 
 // memoryRecallTool exposes long-term memory recall via vector search.
 type memoryRecallTool struct {
-	manager *memory.Manager
+	caller memory.MemoryCaller
 }
 
 func (t *memoryRecallTool) Name() string  { return "memory_recall" }
@@ -60,7 +60,7 @@ func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args 
 		topK = 8
 	}
 
-	if t == nil || t.manager == nil {
+	if t == nil || t.caller == nil {
 		return communi.NewToolCallResult(toolCallID, "memory store not configured")
 	}
 
@@ -77,7 +77,7 @@ func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args 
 	}
 
 	// Long-term recall does not require session_id isolation.
-	chunks, err := t.manager.Recall(ctx, params.Query, "", mts, topK)
+	chunks, err := t.caller.Recall(ctx, params.Query, "", mts, topK)
 	if err != nil {
 		return communi.ErrorToolCallResult(toolCallID, err)
 	}
@@ -107,11 +107,11 @@ func (t *memoryRecallTool) Execute(ctx context.Context, toolCallID string, args 
 }
 
 func NewMemoryRecallTool() agent.Tool {
-	mgr, err := memory.DefaultManager()
+	caller, err := memory.NewVectorStoreMemoryCaller()
 	if err != nil {
 		// Keep tool creatable even if memory is not configured; execute returns
 		// a clear error instead of panicking.
-		return &memoryRecallTool{manager: nil}
+		return &memoryRecallTool{caller: nil}
 	}
-	return &memoryRecallTool{manager: mgr}
+	return &memoryRecallTool{caller: caller}
 }
