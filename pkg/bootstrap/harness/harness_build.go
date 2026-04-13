@@ -7,6 +7,7 @@ import (
 
 type BuildConfig struct {
 	MemoryWriter             baseharness.MemoryWriter
+	MemoryWriters            []baseharness.MemoryWriter
 	Monitoring               baseharness.MonitoringOptions
 	PermissionMode           baseharness.PermissionMode
 	PermissionRules          []baseharness.PermissionRule
@@ -21,6 +22,12 @@ type BuilderOption func(*BuildConfig)
 func WithMemory(mem baseharness.MemoryWriter) BuilderOption {
 	return func(config *BuildConfig) {
 		config.MemoryWriter = mem
+	}
+}
+
+func WithMemoryWriters(mem ...baseharness.MemoryWriter) BuilderOption {
+	return func(config *BuildConfig) {
+		config.MemoryWriters = append(config.MemoryWriters, mem...)
 	}
 }
 
@@ -78,6 +85,7 @@ func BuildDefaultHarness(options ...BuilderOption) *baseharness.Harness {
 
 	return baseharness.BuildDefaultHarness(baseharness.DefaultHarnessOptions{
 		MemoryWriter:             config.MemoryWriter,
+		MemoryWriters:            config.MemoryWriters,
 		Monitoring:               config.Monitoring,
 		PermissionMode:           config.PermissionMode,
 		PermissionRules:          config.PermissionRules,

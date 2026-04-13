@@ -107,7 +107,6 @@ func (b *defaultChildAgentBuilder) BuildChild(ctx context.Context, parent agent.
 		}
 	}
 	controllers := make([]Controller, 0, len(factories))
-	var childContextController *ContextController
 	for _, factory := range factories {
 		if factory == nil {
 			continue
@@ -115,9 +114,6 @@ func (b *defaultChildAgentBuilder) BuildChild(ctx context.Context, parent agent.
 		controller := factory()
 		if controller == nil {
 			continue
-		}
-		if cc, ok := controller.(*ContextController); ok && childContextController == nil {
-			childContextController = cc
 		}
 		controllers = append(controllers, controller)
 	}
@@ -129,11 +125,7 @@ func (b *defaultChildAgentBuilder) BuildChild(ctx context.Context, parent agent.
 	if rolePrompt == "" {
 		rolePrompt = subAgentDefaultBoundaryContract()
 	}
-	if childContextController != nil {
-		childContextController.AppendPersistentPrompt(rolePrompt)
-	} else {
-		child.ContextManager().AppendPrompt("\n\n" + rolePrompt)
-	}
+	child.ContextManager().UpsertPersistentPrompt("subagent_role", rolePrompt)
 	return child, nil
 }
 

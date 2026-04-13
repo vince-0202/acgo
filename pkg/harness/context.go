@@ -218,6 +218,17 @@ func (cc *ContextController) loadPromptFromDisk() {
 			prompt += "\n\n" + extra
 		}
 	}
+	for _, extra := range cc.context.PersistentPrompts() {
+		extra = strings.TrimSpace(extra)
+		if extra == "" {
+			continue
+		}
+		if strings.TrimSpace(prompt) == "" {
+			prompt = extra
+		} else {
+			prompt += "\n\n" + extra
+		}
+	}
 	cc.context.ReplacePrompt(prompt)
 	cc.context.SetLoadedPaths(paths)
 }

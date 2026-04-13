@@ -19,9 +19,8 @@ type skillDoc struct {
 }
 
 type SkillsController struct {
-	agent         agent.AgentRuntime
-	skills        []skillDoc
-	lastSkillText string
+	agent  agent.AgentRuntime
+	skills []skillDoc
 }
 
 func NewSkillsController() *SkillsController {
@@ -44,7 +43,6 @@ func (sc *SkillsController) Install(runtime agent.AgentRuntime) (func(), error) 
 		unsub()
 		sc.agent = nil
 		sc.skills = nil
-		sc.lastSkillText = ""
 	}, nil
 }
 
@@ -55,26 +53,11 @@ func (sc *SkillsController) applySkillsPrompt() {
 	workDir := strings.TrimSpace(sc.agent.ContextManager().ToolWorkingDirectory())
 	sc.skills = loadSkills(workDir)
 	nextSkillText := strings.TrimSpace(skillsPrompt(sc.skills))
-
-	prompt := sc.agent.ContextManager().SystemPrompt()
-	trimLast := strings.TrimSpace(sc.lastSkillText)
-	if trimLast != "" {
-		promptTrim := strings.TrimSpace(prompt)
-		if strings.HasSuffix(promptTrim, trimLast) {
-			keep := strings.TrimSpace(strings.TrimSuffix(promptTrim, trimLast))
-			prompt = keep
-		}
-	}
-
 	if nextSkillText != "" {
-		if strings.TrimSpace(prompt) == "" {
-			prompt = nextSkillText
-		} else {
-			prompt = strings.TrimSpace(prompt) + "\n\n" + nextSkillText
-		}
+		sc.agent.ContextManager().UpsertPersistentPrompt("skills", nextSkillText)
+		return
 	}
-	sc.agent.ContextManager().ReplacePrompt(prompt)
-	sc.lastSkillText = nextSkillText
+	sc.agent.ContextManager().RemovePersistentPrompt("skills")
 }
 
 func skillsPrompt(skills []skillDoc) string {

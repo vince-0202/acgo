@@ -2,6 +2,7 @@ package harness
 
 type DefaultHarnessOptions struct {
 	MemoryWriter             MemoryWriter
+	MemoryWriters            []MemoryWriter
 	Monitoring               MonitoringOptions
 	PermissionMode           PermissionMode
 	PermissionRules          []PermissionRule
@@ -16,6 +17,11 @@ func BuildDefaultHarness(opts DefaultHarnessOptions) *Harness {
 	if opts.RegisterSubAgentTool != nil {
 		registerSubAgentTool = *opts.RegisterSubAgentTool
 	}
+	memoryWriters := append([]MemoryWriter(nil), opts.MemoryWriters...)
+	if opts.MemoryWriter != nil {
+		memoryWriters = append(memoryWriters, opts.MemoryWriter)
+	}
+
 	permission := NewPermissionController(opts.PermissionMode, opts.PermissionRules, opts.PermissionConfirmHook)
 	factories := opts.ChildControllerFactories
 	if len(factories) == 0 {
@@ -23,7 +29,7 @@ func BuildDefaultHarness(opts DefaultHarnessOptions) *Harness {
 			func() Controller { return NewContextController() },
 			func() Controller { return NewSkillsController() },
 			func() Controller { return permission.Clone() },
-			func() Controller { return NewMemoryController(opts.MemoryWriter) },
+			func() Controller { return NewMemoryController(memoryWriters...) },
 			func() Controller { return NewMonitoringController(opts.Monitoring) },
 		}
 	}
@@ -32,7 +38,7 @@ func BuildDefaultHarness(opts DefaultHarnessOptions) *Harness {
 		NewContextController(),
 		NewSkillsController(),
 		permission,
-		NewMemoryController(opts.MemoryWriter),
+		NewMemoryController(memoryWriters...),
 		NewMonitoringController(opts.Monitoring),
 		NewSubAgentController(SubAgentControllerOptions{
 			Builder:                  opts.ChildAgentBuilder,

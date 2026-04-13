@@ -47,6 +47,7 @@ type ContextRuntime interface {
 	ProjectRoot() string
 	ToolWorkingDirectory() string
 	SystemPrompt() string
+	PersistentPrompts() []string
 	ContextOptions() *ContextOptions
 	MessageSnapshot() []communi.Message
 	LoadedPaths() []string
@@ -54,6 +55,9 @@ type ContextRuntime interface {
 	SetProjectRoot(string) error
 	ReplacePrompt(string)
 	AppendPrompt(string)
+	AppendPersistentPrompt(string)
+	UpsertPersistentPrompt(string, string)
+	RemovePersistentPrompt(string)
 	SetLoadedPaths([]string)
 
 	AppendMessage(...communi.Message)

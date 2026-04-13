@@ -24,6 +24,10 @@ type Context struct {
 	projectRoot string
 	Paths       []string // File paths that were read (for logging/debug)
 	Prompt      string   // Final merged system prompt
+
+	persistentPrompts []string
+	persistentByKey   map[string]string
+	persistentOrder   []string
 }
 
 func (c *Context) WorkDir() string {
@@ -73,6 +77,74 @@ func (c *Context) AppendPrompt(prompt string) {
 		return
 	}
 	c.Prompt += prompt
+}
+
+func (c *Context) PersistentPrompts() []string {
+	if c == nil {
+		return nil
+	}
+	out := append([]string(nil), c.persistentPrompts...)
+	for _, key := range c.persistentOrder {
+		if prompt := strings.TrimSpace(c.persistentByKey[key]); prompt != "" {
+			out = append(out, prompt)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (c *Context) AppendPersistentPrompt(prompt string) {
+	c.UpsertPersistentPrompt("", prompt)
+}
+
+func (c *Context) UpsertPersistentPrompt(key string, prompt string) {
+	if c == nil {
+		return
+	}
+	key = strings.TrimSpace(key)
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return
+	}
+	if key != "" {
+		if c.persistentByKey == nil {
+			c.persistentByKey = make(map[string]string)
+		}
+		if _, exists := c.persistentByKey[key]; !exists {
+			c.persistentOrder = append(c.persistentOrder, key)
+		}
+		c.persistentByKey[key] = prompt
+		return
+	}
+	for _, existing := range c.persistentPrompts {
+		if strings.TrimSpace(existing) == prompt {
+			return
+		}
+	}
+	c.persistentPrompts = append(c.persistentPrompts, prompt)
+}
+
+func (c *Context) RemovePersistentPrompt(key string) {
+	if c == nil {
+		return
+	}
+	key = strings.TrimSpace(key)
+	if key == "" || c.persistentByKey == nil {
+		return
+	}
+	if _, ok := c.persistentByKey[key]; !ok {
+		return
+	}
+	delete(c.persistentByKey, key)
+	out := c.persistentOrder[:0]
+	for _, existing := range c.persistentOrder {
+		if existing != key {
+			out = append(out, existing)
+		}
+	}
+	c.persistentOrder = out
 }
 
 func (c *Context) ContextOptions() *ContextOptions {
