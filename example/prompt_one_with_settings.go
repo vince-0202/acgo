@@ -42,7 +42,7 @@ func PromptOne() error {
 		return fmt.Errorf("attach harness failed: %w", err)
 	}
 
-	unsub := ag.Subscribe(func(e agent.Event, abort func()) {
+	unsub := h.Subscribe(func(e agent.Event, abort func()) {
 		switch e.Type {
 		case agent.EventMessageEnd:
 			if e.Message == nil {
@@ -54,7 +54,7 @@ func PromptOne() error {
 	defer unsub()
 
 	userText := "你好，请用一句话介绍你自己。"
-	if err := ag.Prompt(context.Background(), userText); err != nil {
+	if err := h.Prompt(context.Background(), userText); err != nil {
 		return fmt.Errorf("prompt failed: %w", err)
 	}
 

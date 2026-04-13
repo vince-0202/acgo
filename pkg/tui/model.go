@@ -24,7 +24,7 @@ type ModelOptions struct {
 }
 
 type Model struct {
-	agent   *agent.Agent
+	agent   agent.AgentExecutor
 	harness *harness.Harness
 	session *session.Session
 
@@ -98,7 +98,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	}
 
 	defaultHarness := bootstrapharness.BuildDefaultHarness()
-	agent, err := bootstrapagent.BuildAgent(
+	baseAgent, err := bootstrapagent.BuildAgent(
 		opts.Settings,
 		bootstrapagent.WithId("tui-new"),
 		bootstrapagent.WithDefaultToolsExcept("rag_search"),
@@ -106,7 +106,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := defaultHarness.Attach(agent); err != nil {
+	if err := defaultHarness.Attach(baseAgent); err != nil {
 		return nil, err
 	}
 	sess, err := bootsession.LoadSession(opts.SessionID, opts.Settings.Session)
@@ -115,7 +115,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 	}
 
 	model := &Model{
-		agent:            agent,
+		agent:            defaultHarness,
 		harness:          defaultHarness,
 		session:          sess,
 		toolPendingIdx:   make(map[string]int),

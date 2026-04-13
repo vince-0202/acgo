@@ -26,6 +26,21 @@ type AgentRuntime interface {
 	SubAgentManager() SubAgentRuntime
 }
 
+// AgentExecutor is the executable agent abstraction exposed to callers.
+// A concrete agent can implement it directly, and harness can proxy it.
+type AgentExecutor interface {
+	AgentRuntime
+
+	Prompt(context.Context, string) error
+	PromptScheduledTask(context.Context, string) error
+	Reset()
+	Abort()
+
+	SetModel(llm.Model)
+	EnqueueSteering(communi.Message)
+	EnqueueFollowUp(communi.Message)
+}
+
 // ContextRuntime exposes the mutable conversation context owned by the agent.
 type ContextRuntime interface {
 	WorkDir() string
