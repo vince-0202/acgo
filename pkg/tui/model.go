@@ -7,6 +7,7 @@ import (
 
 	"github.com/vince-0202/acgo/pkg/agent"
 	bootstrapagent "github.com/vince-0202/acgo/pkg/bootstrap/agent"
+	bootstrapharness "github.com/vince-0202/acgo/pkg/bootstrap/harness"
 	bootsession "github.com/vince-0202/acgo/pkg/bootstrap/session"
 	"github.com/vince-0202/acgo/pkg/bootstrap/setting"
 	"github.com/vince-0202/acgo/pkg/communi"
@@ -96,12 +97,16 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		return nil, fmt.Errorf("settings are required")
 	}
 
-	agent, harness, err := bootstrapagent.BuildAgentRuntime(
+	defaultHarness := bootstrapharness.BuildDefaultHarness()
+	agent, err := bootstrapagent.BuildAgent(
 		opts.Settings,
 		bootstrapagent.WithId("tui-new"),
 		bootstrapagent.WithDefaultToolsExcept("rag_search"),
 	)
 	if err != nil {
+		return nil, err
+	}
+	if err := defaultHarness.Attach(agent); err != nil {
 		return nil, err
 	}
 	sess, err := bootsession.LoadSession(opts.SessionID, opts.Settings.Session)
@@ -111,7 +116,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 
 	model := &Model{
 		agent:            agent,
-		harness:          harness,
+		harness:          defaultHarness,
 		session:          sess,
 		toolPendingIdx:   make(map[string]int),
 		commands:         make(map[string]commandSpec),

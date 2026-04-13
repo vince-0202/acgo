@@ -32,10 +32,10 @@ func (sc *SkillsController) Name() string {
 	return "skills"
 }
 
-func (sc *SkillsController) Install(agent agent.AgentRuntime) (func(), error) {
-	sc.agent = agent
+func (sc *SkillsController) Install(runtime agent.AgentRuntime) (func(), error) {
+	sc.agent = runtime
 	sc.applySkillsPrompt()
-	unsub := agent.Subscribe(func(event agent.Event, abort func()) {
+	unsub := runtime.Subscribe(func(event agent.Event, abort func()) {
 		if event.Type == agent.EventAgentStart {
 			sc.applySkillsPrompt()
 		}

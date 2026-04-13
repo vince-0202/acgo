@@ -45,19 +45,19 @@ func (c *SubAgentController) Name() string {
 	return "subagent"
 }
 
-func (c *SubAgentController) Install(agent agent.AgentRuntime) (func(), error) {
-	c.installedAgent = agent
+func (c *SubAgentController) Install(runtime agent.AgentRuntime) (func(), error) {
+	c.installedAgent = runtime
 	builder := c.opts.Builder
 	if builder == nil {
 		builder = &defaultChildAgentBuilder{controllerFactories: c.opts.ChildControllerFactories}
 	}
-	agent.SubAgentManager().SetFactory(func(ctx context.Context, parent agent.AgentRuntime, spec agent.SubAgentSpec) (*agent.Agent, error) {
+	runtime.SubAgentManager().SetFactory(func(ctx context.Context, parent agent.AgentRuntime, spec agent.SubAgentSpec) (*agent.Agent, error) {
 		return builder.BuildChild(ctx, parent, spec)
 	})
 
 	if c.opts.RegisterTool {
-		c.registeredTool = newSubAgentTool(agent.SubAgentManager())
-		agent.ToolManager().RegisterTool(c.registeredTool)
+		c.registeredTool = newSubAgentTool(runtime.SubAgentManager())
+		runtime.ToolManager().RegisterTool(c.registeredTool)
 	}
 
 	return func() {
