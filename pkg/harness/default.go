@@ -2,6 +2,7 @@ package harness
 
 type DefaultHarnessOptions struct {
 	MemoryWriter             MemoryWriter
+	Monitoring               MonitoringOptions
 	PermissionMode           PermissionMode
 	PermissionRules          []PermissionRule
 	PermissionConfirmHook    PermissionConfirmHook
@@ -23,6 +24,7 @@ func BuildDefaultHarness(opts DefaultHarnessOptions) *Harness {
 			func() Controller { return NewSkillsController() },
 			func() Controller { return permission.Clone() },
 			func() Controller { return NewMemoryController(opts.MemoryWriter) },
+			func() Controller { return NewMonitoringController(opts.Monitoring) },
 		}
 	}
 
@@ -31,6 +33,7 @@ func BuildDefaultHarness(opts DefaultHarnessOptions) *Harness {
 		NewSkillsController(),
 		permission,
 		NewMemoryController(opts.MemoryWriter),
+		NewMonitoringController(opts.Monitoring),
 		NewSubAgentController(SubAgentControllerOptions{
 			Builder:                  opts.ChildAgentBuilder,
 			ChildControllerFactories: factories,

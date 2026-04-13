@@ -65,6 +65,7 @@ func LoadSettingsByConfig(config *SettingConfig) (*Settings, error) {
 	s.Log.LoadAndInit()
 	s.Agent.LoadAndInit()
 	s.Session.LoadAndInit(s.WorkDir)
+	s.Monitoring.LoadAndInit(s.WorkDir)
 
 	marshal, err := json.Marshal(s)
 	if err != nil {

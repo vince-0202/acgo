@@ -37,7 +37,7 @@ func PromptOne() error {
 	if err != nil {
 		return fmt.Errorf("build agent failed: %w", err)
 	}
-	h := bootstrapharness.BuildDefaultHarness()
+	h := bootstrapharness.BuildDefaultHarnessBySettings(settings)
 	if err := h.Attach(ag); err != nil {
 		return fmt.Errorf("attach harness failed: %w", err)
 	}

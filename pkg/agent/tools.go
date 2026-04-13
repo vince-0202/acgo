@@ -167,7 +167,7 @@ func (tm *toolsManager) Execute(ctx context.Context, turn *turn) {
 		if !ok {
 			err := ErrUnknownProvider(call.Name)
 			res := communi.ErrorToolCallResult(call.ID, err)
-			finalizeToolExecution(turn.agent, tool, call, call.Arguments, res, options)
+			finalizeToolExecution(turn.agent, turn.id, tool, call, call.Arguments, res, options)
 			continue
 		}
 
@@ -238,6 +238,12 @@ func (te *ToolExecutor) ExecuteByName(ctx context.Context, opts ExecuteToolOptio
 		te.agent.emit(NewEvent(
 			WithEventType(EventToolExecutionStart),
 			WithEventAgent(te.agent),
+			WithEventTurnId(func() string {
+				if te.turn != nil {
+					return te.turn.id
+				}
+				return ""
+			}()),
 			WithEventTooCallId(te.caller.ID),
 			WithEventTool(te.tool),
 		))
@@ -246,7 +252,7 @@ func (te *ToolExecutor) ExecuteByName(ctx context.Context, opts ExecuteToolOptio
 
 	if err := ValidateToolArguments(te.tool.Name(), te.tool.JSONSchema(), toolArgs); err != nil {
 		res := communi.ErrorToolCallResult(te.caller.ID, err)
-		finalizeToolExecution(te.agent, te.tool, toolCall, toolArgs, res, opts)
+		finalizeToolExecution(te.agent, reqTurnID(te.turn), te.tool, toolCall, toolArgs, res, opts)
 		return res, err
 	}
 
@@ -283,7 +289,7 @@ func (te *ToolExecutor) ExecuteByName(ctx context.Context, opts ExecuteToolOptio
 	} else {
 		res, err = executeCore(ctx, req)
 	}
-	finalizeToolExecution(te.agent, te.tool, toolCall, toolArgs, res, opts)
+	finalizeToolExecution(te.agent, req.TurnID, te.tool, toolCall, toolArgs, res, opts)
 	return res, err
 }
 
@@ -305,7 +311,7 @@ func (tm *toolsManager) executeWithMiddleware(ctx context.Context, req ToolExecu
 	return handler(ctx, req)
 }
 
-func finalizeToolExecution(agent *Agent, tool Tool, call communi.ToolCallRequest, args json.RawMessage, result communi.ToolCallResult, opts ExecuteToolOptions) {
+func finalizeToolExecution(agent *Agent, turnID string, tool Tool, call communi.ToolCallRequest, args json.RawMessage, result communi.ToolCallResult, opts ExecuteToolOptions) {
 	msg, errVal := toolResultToMessage(call, args, result)
 	if opts.AppendTranscript {
 		agent.context.AppendMessage(msg)
@@ -314,6 +320,7 @@ func finalizeToolExecution(agent *Agent, tool Tool, call communi.ToolCallRequest
 		agent.emit(NewEvent(
 			WithEventType(EventToolExecutionEnd),
 			WithEventAgent(agent),
+			WithEventTurnId(turnID),
 			WithEventTool(tool),
 			WithEventTooCallId(call.ID),
 			WithEventMessage(&msg),
@@ -322,12 +329,20 @@ func finalizeToolExecution(agent *Agent, tool Tool, call communi.ToolCallRequest
 		agent.emit(NewEvent(
 			WithEventType(EventAfterToolExecution),
 			WithEventAgent(agent),
+			WithEventTurnId(turnID),
 			WithEventTool(tool),
 			WithEventTooCallId(call.ID),
 			WithEventMessage(&msg),
 			WithEventError(errors.WrapError(errVal)),
 		))
 	}
+}
+
+func reqTurnID(t *turn) string {
+	if t == nil {
+		return ""
+	}
+	return t.id
 }
 
 // NormalizeToolCallArguments returns a JSON payload suitable for tool execution.

@@ -97,7 +97,7 @@ func NewModel(opts *ModelOptions) (*Model, error) {
 		return nil, fmt.Errorf("settings are required")
 	}
 
-	defaultHarness := bootstrapharness.BuildDefaultHarness()
+	defaultHarness := bootstrapharness.BuildDefaultHarnessBySettings(opts.Settings)
 	baseAgent, err := bootstrapagent.BuildAgent(
 		opts.Settings,
 		bootstrapagent.WithId("tui-new"),

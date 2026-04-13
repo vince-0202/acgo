@@ -9,11 +9,12 @@ import (
 
 // Settings represents the merged configuration for acgo.
 type Settings struct {
-	WorkDir string
-	Log     Log           `mapstructure:"log"`
-	Agent   AgentSetting  `mapstructure:"agent"`
-	Session SessionConfig `mapstructure:"session"`
-	Rag     RagSetting    `mapstructure:"rag"`
+	WorkDir    string           `json:"work_dir"`
+	Log        Log              `mapstructure:"log"`
+	Agent      AgentSetting     `mapstructure:"agent"`
+	Session    SessionConfig    `mapstructure:"session"`
+	Rag        RagSetting       `mapstructure:"rag"`
+	Monitoring MonitoringConfig `mapstructure:"monitoring"`
 }
 
 // SessionConfig holds session storage settings.
